@@ -1,0 +1,227 @@
+import { errors } from '../../lib/http-errors.js';
+import { maskSecret } from '../../lib/sanitize.js';
+import { createSub2apiClient } from './client.js';
+import { createUploader } from './upload.js';
+import { createMonitor } from './monitor.js';
+
+const CONFIG_KEY = 'sub2api.config';
+
+export function createSub2apiModule({ engine, logger }) {
+  return async function sub2apiModule(app) {
+    const db = app.db;
+    const client = createSub2apiClient(() => app.settings.get(CONFIG_KEY));
+    app.decorate('sub2apiClient', client);
+
+    const uploader = createUploader({
+      db,
+      crypto: app.crypto,
+      client,
+      getConfig: () => app.settings.get(CONFIG_KEY),
+      dataDir: app.config.dataDir,
+      proxySelector: app.proxySelector,
+      logger,
+    });
+    app.decorate('sub2apiUploader', uploader);
+
+    const monitor = createMonitor({
+      db,
+      crypto: app.crypto,
+      client,
+      getConfig: () => app.settings.get(CONFIG_KEY),
+      pools: app.accountsPools,
+      engine,
+      uploader,
+      logger,
+    });
+    app.decorate('sub2apiMonitor', monitor);
+
+    // 引擎 hook：refresh 任务成功（tokens 回写）→ 推送新凭据到远端（监控自动修复场景）
+    const previousHandler = engine.hooks.onTokensSaved;
+    engine.hooks.onTokensSaved = async (job, runtime, tokens) => {
+      await previousHandler?.(job, runtime, tokens);
+      if (job.type === 'refresh' && job.account_id) {
+        try {
+          await monitor.pushRepairedCredentials(job.account_id);
+        } catch (error) {
+          logger.warn({ accountId: job.account_id, err: error.message }, 'push repaired credentials failed');
+        }
+      }
+    };
+
+    function configView() {
+      const config = app.settings.get(CONFIG_KEY) || {};
+      return {
+        base_url: config.base_url || '',
+        admin_key_masked: config.admin_key ? maskSecret(config.admin_key) : '',
+        has_admin_key: Boolean(config.admin_key),
+        group_ids: config.group_ids || [],
+        upload_defaults: config.upload_defaults || {},
+        join_auto_upload: Boolean(config.join_auto_upload),
+        monitor: config.monitor || {},
+      };
+    }
+
+    function validateConfigInput(body) {
+      const baseUrl = String(body.base_url || '').trim().replace(/\/+$/, '');
+      if (baseUrl) {
+        let parsed;
+        try {
+          parsed = new URL(baseUrl);
+        } catch {
+          throw errors.validation('sub2api 后端地址格式不正确');
+        }
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+          throw errors.validation('sub2api 后端地址必须使用 HTTP 或 HTTPS');
+        }
+      }
+      return body;
+    }
+
+    app.get('/api/v1/sub2api/config', async () => configView());
+
+    function normalizeUploadDefaults(input = {}) {
+      const num = (v) => {
+        if (v === '' || v === null || v === undefined) return null;
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+      };
+      return {
+        concurrency: num(input.concurrency),
+        load_factor: num(input.load_factor),
+        priority: num(input.priority),
+        model_whitelist: Array.isArray(input.model_whitelist)
+          ? input.model_whitelist.map(String).map((s) => s.trim()).filter(Boolean)
+          : [],
+        disable_auto_pause_5h: Boolean(input.disable_auto_pause_5h),
+        disable_auto_pause_7d: Boolean(input.disable_auto_pause_7d),
+        auto_select_proxy: input.auto_select_proxy !== false,
+        proxy_id: Number.isSafeInteger(Number(input.proxy_id)) && Number(input.proxy_id) > 0
+          ? Number(input.proxy_id)
+          : null,
+      };
+    }
+
+    app.put('/api/v1/sub2api/config', async (request) => {
+      validateConfigInput(request.body || {});
+      const current = app.settings.get(CONFIG_KEY) || {};
+      const body = request.body || {};
+      const adminKeyInput = String(body.admin_key ?? '').trim();
+      const nextAdminKey =
+        !adminKeyInput || adminKeyInput === '****' ? current.admin_key || '' : adminKeyInput;
+      const next = {
+        base_url: String(body.base_url ?? current.base_url ?? '').trim().replace(/\/+$/, ''),
+        admin_key: nextAdminKey,
+        group_ids: Array.isArray(body.group_ids)
+          ? body.group_ids.map(Number).filter((v) => Number.isSafeInteger(v) && v > 0)
+          : current.group_ids || [],
+        upload_defaults: normalizeUploadDefaults(body.upload_defaults ?? current.upload_defaults ?? {}),
+        join_auto_upload: body.join_auto_upload ?? Boolean(current.join_auto_upload),
+        monitor: body.monitor || current.monitor || {},
+      };
+      app.settings.set(CONFIG_KEY, next);
+      monitor.startIfEnabled();
+      return { config: configView() };
+    });
+
+    app.post('/api/v1/sub2api/test', async (request) => {
+      const body = request.body || {};
+      const current = app.settings.get(CONFIG_KEY) || {};
+      const override =
+        body.base_url || body.admin_key
+          ? {
+              base_url: String(body.base_url || current.base_url || '').trim().replace(/\/+$/, ''),
+              admin_key: String(body.admin_key || current.admin_key || '').trim(),
+            }
+          : null;
+      try {
+        return await client.testConnection(override);
+      } catch (error) {
+        if (error.code === 'SUB2API_NOT_CONFIGURED') throw error;
+        throw errors.sub2apiUnavailable(error.message);
+      }
+    });
+
+    app.get('/api/v1/sub2api/groups', async () => {
+      const payload = await client.listGroups();
+      const groups = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : [];
+      return {
+        items: groups.map((group) => ({ id: group.id, name: group.name, status: group.status ?? 'active' })),
+      };
+    });
+
+    app.get('/api/v1/sub2api/proxies', async () => {
+      const payload = await client.listProxies();
+      const proxies = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : [];
+      return {
+        items: proxies.map((proxy) => ({
+          id: proxy.id,
+          name: proxy.name,
+          protocol: proxy.protocol,
+          host: proxy.host,
+          port: proxy.port,
+          ip_address: proxy.ip_address ?? null,
+          status: proxy.status ?? 'active',
+        })),
+      };
+    });
+
+    app.get('/api/v1/sub2api/remote-accounts', async (request) => {
+      const email = String(request.query.email || '').trim().toLowerCase();
+      if (!email) throw errors.validation('email 参数不能为空');
+      const accounts = await client.listAllOpenAiAccounts();
+      const found = accounts.find((acc) => client.accountEmail(acc) === email);
+      if (!found) return { found: false, account: null };
+      return {
+        found: true,
+        account: {
+          id: found.id,
+          name: found.name,
+          status: found.status,
+          error_message: found.error_message ?? null,
+          group_ids: found.group_ids ?? [],
+          proxy_id: found.proxy_id ?? null,
+        },
+      };
+    });
+
+    app.get('/api/v1/sub2api/monitor', async () => monitor.view());
+
+    app.get('/api/v1/sub2api/monitor/logs', async (request) => {
+      const limit = Math.min(100, Math.max(1, Number.parseInt(request.query.limit || '20', 10) || 20));
+      return { items: monitor.recentLogs(limit) };
+    });
+
+    app.post('/api/v1/sub2api/monitor', async (request) => {
+      const body = request.body || {};
+      const current = app.settings.get(CONFIG_KEY) || {};
+      const nextMonitor = { ...(current.monitor || {}) };
+      for (const key of [
+        'enabled',
+        'interval_minutes',
+        'cooldown_minutes',
+        'auto_repair',
+        'max_repair_attempts',
+        'auto_replenish',
+        'reserve_threshold',
+        'pause_on_discard',
+        'rate_limit_reset_threshold_hours',
+        'banned_patterns',
+        'rate_limit_patterns',
+      ]) {
+        if (body[key] !== undefined) nextMonitor[key] = body[key];
+      }
+      app.settings.set(CONFIG_KEY, { ...current, monitor: nextMonitor });
+      monitor.startIfEnabled();
+      return monitor.view();
+    });
+
+    app.post('/api/v1/sub2api/monitor/check', async (request, reply) => {
+      const view = await monitor.runCheck({ source: 'manual' });
+      reply.code(202);
+      return { ok: true, monitor: view };
+    });
+
+    // 上传入口（主号池批量上传路由在 accounts 模块注册，这里注册复用实现）
+    app.decorate('runUpload', async (ids, options) => uploader.uploadAccounts(ids, options));
+  };
+}

@@ -1,0 +1,151 @@
+import { api } from './client';
+import type {
+  DashboardSummary,
+  ImportResult,
+  Job,
+  MainAccount,
+  Paged,
+  Pool,
+  Proxy,
+  ProxyImportResult,
+  ReserveAccount,
+  DiscardAccount,
+  SessionInfo,
+  SessionItem,
+  SettingsView,
+  Sub2ApiConfigView,
+  Sub2ApiMonitorLog,
+  Sub2ApiMonitorView,
+  UploadOptions,
+} from './types';
+
+// ---------- auth ----------
+export const authApi = {
+  session: () => api<SessionInfo>('/auth/session'),
+  login: (body: { password?: string; new_password?: string }) =>
+    api<{ ok: boolean; password_initialized?: boolean }>('/auth/login', { json: body }),
+  logout: () => api<{ ok: boolean }>('/auth/logout', { json: {} }),
+  logoutAll: () => api<{ ok: boolean; revoked: number }>('/auth/logout-all', { json: {} }),
+  sessions: () => api<{ items: SessionItem[] }>('/auth/sessions'),
+  changePassword: (body: { current_password: string; new_password: string }) =>
+    api<{ ok: boolean }>('/auth/password', { json: body }),
+};
+
+// ---------- proxies ----------
+export interface ProxyFilter {
+  status?: string;
+  q?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export const proxiesApi = {
+  list: (f: ProxyFilter = {}) =>
+    api<Paged<Proxy> & { stats: Record<string, number> }>(`/proxies?${toQuery(f)}`),
+  import: (text: string) => api<ProxyImportResult>('/proxies/import', { json: { text } }),
+  test: (ids?: number[]) => api<{ started: number }>('/proxies/test', { json: ids?.length ? { ids } : {} }),
+  updateLabel: (id: number, label: string) => api<Proxy>(`/proxies/${id}`, { method: 'PATCH', json: { label } }),
+  remove: (id: number) => api<{ ok: boolean }>(`/proxies/${id}`, { method: 'DELETE' }),
+  batchRemove: (ids: number[]) => api<{ deleted: number }>('/proxies/batch-delete', { json: { ids } }),
+};
+
+// ---------- accounts ----------
+export interface AccountFilter {
+  q?: string;
+  status?: string;
+  banned?: string;
+  has_balance?: string;
+  page?: number;
+  page_size?: number;
+  sort?: string;
+}
+
+export const accountsApi = {
+  list: <T extends ReserveAccount | MainAccount | DiscardAccount>(pool: Pool, f: AccountFilter = {}) =>
+    api<Paged<T> & { stats: Record<string, number> }>(`/accounts?pool=${pool}&${toQuery(f)}`),
+  import: (text: string, opts: { force_discard?: boolean; force_remote?: boolean } = {}) =>
+    api<ImportResult>('/accounts/import', { json: { text, ...opts } }),
+  create: (body: Record<string, unknown>) =>
+    api<{ account: MainAccount; job_id: string }>('/accounts', { json: body }),
+  refreshMail: (id: number) => api<{ ok: boolean }>(`/accounts/${id}/refresh-mail`, { json: {} }),
+  joinMain: (ids: number[]) =>
+    api<{ started: number[]; skipped: { id: number; reason: string }[] }>('/accounts/join-main', { json: { ids } }),
+  batchAuthorize: (ids: number[]) =>
+    api<{ started: number; skipped: { id: number; reason: string }[] }>('/accounts/batch-authorize', { json: { ids } }),
+  batchRefreshBalance: (ids: number[]) => api<{ started: number }>('/accounts/batch-refresh-balance', { json: { ids } }),
+  batchUpload: (ids: number[], options?: UploadOptions) =>
+    api<{ created: number; updated: number; failed: { id: number; email: string | null; error: string }[]; updated_account_ids: number[] }>(
+      '/accounts/batch-upload-sub2api',
+      { json: { ids, options } },
+    ),
+  batchDiscard: (ids: number[]) => api<{ discarded: number }>('/accounts/batch-discard', { json: { ids } }),
+  restore: (id: number) => api<{ ok: boolean; status: string }>(`/accounts/${id}/restore`, { json: {} }),
+  batchDelete: (ids: number[]) => api<{ deleted: number }>('/accounts/batch-delete', { json: { ids } }),
+  events: (id: number) =>
+    api<{ items: { type: string; detail: Record<string, unknown> | null; created_at: string }[] }>(`/accounts/${id}/events`),
+};
+
+// ---------- jobs ----------
+export interface JobFilter {
+  status?: string;
+  type?: string;
+  q?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export const jobsApi = {
+  list: (f: JobFilter = {}) =>
+    api<Paged<Job> & { stats: { queued: number; running: number; awaiting_input: number } }>(`/jobs?${toQuery(f)}`),
+  get: (id: string) => api<Job & { can_download?: boolean }>(`/jobs/${id}`),
+  logs: (id: string, after: number, limit = 65536) =>
+    api<{ chunk: string; next_offset: number; eof: boolean }>(`/jobs/${id}/logs?after=${after}&limit=${limit}`),
+  input: (id: string, action: string, value?: string) =>
+    api<{ ok: boolean }>(`/jobs/${id}/input`, { json: { action, value } }),
+  cancel: (id: string) => api<{ job: Job }>(`/jobs/${id}/cancel`, { json: {} }),
+  retry: (id: string, proxy_id?: number) => api<{ job: Job }>(`/jobs/${id}/retry`, { json: { proxy_id } }),
+  cancelAll: () => api<{ canceled: number }>('/jobs/cancel-all', { json: {} }),
+};
+
+// ---------- sub2api ----------
+export const sub2apiApi = {
+  config: () => api<Sub2ApiConfigView>('/sub2api/config'),
+  updateConfig: (body: Record<string, unknown>) => api<{ config: Sub2ApiConfigView }>('/sub2api/config', {
+    method: 'PUT',
+    json: body,
+  }),
+  test: (body: { base_url?: string; admin_key?: string } = {}) =>
+    api<{ ok: boolean; groups: number; latency_ms: number }>('/sub2api/test', { json: body }),
+  groups: () => api<{ items: { id: number; name: string; status: string }[] }>('/sub2api/groups'),
+  proxies: () =>
+    api<{ items: { id: number; name: string; protocol: string; host: string; port: number; status: string }[] }>(
+      '/sub2api/proxies',
+    ),
+  remoteAccount: (email: string) =>
+    api<{ found: boolean; account: { id: number; name: string; status: string; error_message: string | null } | null }>(
+      `/sub2api/remote-accounts?email=${encodeURIComponent(email)}`,
+    ),
+  monitor: () => api<Sub2ApiMonitorView>('/sub2api/monitor'),
+  monitorLogs: (limit = 20) => api<{ items: Sub2ApiMonitorLog[] }>(`/sub2api/monitor/logs?limit=${limit}`),
+  updateMonitor: (body: Record<string, unknown>) => api<Sub2ApiMonitorView>('/sub2api/monitor', { json: body }),
+  checkNow: () => api<{ ok: boolean; monitor: Sub2ApiMonitorView }>('/sub2api/monitor/check', { json: {} }),
+};
+
+// ---------- settings / dashboard ----------
+export const settingsApi = {
+  get: () => api<SettingsView>('/settings'),
+  update: (body: Record<string, unknown>) => api<SettingsView>('/settings', { method: 'PUT', json: body }),
+  saveSmsProvider: (body: Record<string, unknown>) => api<SettingsView>('/settings/sms-provider', { json: body }),
+};
+
+export const dashboardApi = {
+  summary: () => api<DashboardSummary>('/dashboard/summary'),
+};
+
+function toQuery(obj: object): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+  }
+  return params.toString();
+}

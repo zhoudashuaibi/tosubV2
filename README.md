@@ -1,0 +1,117 @@
+# toSub2 v2
+
+ChatGPT 账号池管理系统（模块化重写版）：代理池 + 三级号池（备用/主/废弃）+ 任务引擎 + sub2api 管控，单容器部署。
+
+> 设计文档见 `docs/v2/`（架构、数据库、协议、API、前端、安全、部署、迁移、路线图全套规范）。
+
+## 功能总览
+
+| 模块 | 能力 |
+|---|---|
+| 认证 | 首访设密 / HttpOnly Cookie 30 天滑动会话 / IP 限流（5 次锁 15 分钟，DB 持久）/ 改密全端登出 / CSRF 双保险 |
+| 代理池 | 批量导入去重、一键测活（curl_cffi 过 CF 口径）、随机选路、失败降级本机直连 |
+| 备用号池 | Outlook 四段导入（三重查重）、邮件初始化（初始余额 credits/25 + 封禁关键字）、单/批量加入主池 |
+| 主号池 | 邮箱验证码自动登录（json-events 事件流驱动）、批量授权（refresh 优先失败转全登）、批量余额、批量上传 sub2api（查重替换/最少绑定代理/---N 余额后缀） |
+| 废弃号池 | 401/429/修复失败/登录封禁/手动废弃五类原因，支持移回主池 |
+| 任务中心 | 队列/并发调度、人工内联输入（验证码/密码/手机号）、增量日志、取消/重试、代理风控自动重启、断点续跑、重启恢复 |
+| sub2api | 连接配置加密存储、监控巡检（分类正则可配）、自动重登修复、自动补号 |
+| 安全 | 凭据/token/代理 URL AES-256-GCM 入库、日志脱敏、敏感字段只写不读 |
+
+## 快速开始
+
+### Docker（推荐）
+
+```bash
+mkdir -p data && sudo chown 1000:1000 data   # volume 属主与容器内 node 用户一致
+echo 'TOSUB2_SECRET_KEY='"$(openssl rand -base64 32)" > .env
+docker compose up -d
+# 打开 http://127.0.0.1:1999 → 首访设置密码 → 登录
+```
+
+公网部署**必须**前置 Nginx/Caddy 做 HTTPS（反代示例见 docs/v2/08 §4）；compose 默认只绑 127.0.0.1。
+
+### 服务器部署（GitHub Actions 构建的镜像）
+
+推送到 `main` 分支后，CI 自动构建镜像并发布到 GHCR（私有仓库，拉取需先登录）：
+
+```bash
+# 一次性：用 PAT（需 read:packages 权限）登录 GHCR
+echo <YOUR_GITHUB_PAT> | docker login ghcr.io -u zhoudashuaibi --password-stdin
+
+mkdir -p data && sudo chown 1000:1000 data
+echo 'TOSUB2_SECRET_KEY='"$(openssl rand -base64 32)" > .env
+docker pull ghcr.io/zhoudashuaibi/tosubv2:latest
+docker run -d --name tosub2 --restart unless-stopped \
+  -p 127.0.0.1:1999:1999 -v ./data:/app/data --env-file .env \
+  ghcr.io/zhoudashuaibi/tosubv2:latest
+# 或把 docker-compose.yml 里的 image 注释打开，docker compose up -d
+```
+
+镜像标签：`latest`（main 最新）、`main`、`vX.Y.Z`（打 tag 发布）、短 SHA。
+
+### 裸机开发
+
+```bash
+npm install
+python3 -m pip install -r requirements.txt   # curl_cffi（TLS 指纹）
+npm run build                                # 前端 → server/web-dist
+npm start                                    # http://127.0.0.1:1999
+
+# 前后端分离开发
+npm run dev:web                              # vite :5173，/api 代理到 :1999
+```
+
+Windows 下 `better-sqlite3` 需预编译产物（npm 自动下载）；源码编译需 VS Build Tools。
+
+### 环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `TOSUB2_DATA_DIR` | `./data` | SQLite/密钥/日志/断点/产物根目录 |
+| `TOSUB2_PORT` / `TOSUB2_HOST` | 1999 / 127.0.0.1 | 监听 |
+| `TOSUB2_CONSOLE_PASSWORD` | - | 首次密码种子（入库后不再生效） |
+| `TOSUB2_SECRET_KEY` | 自动生成 `data/secret.key` | 加密主密钥（建议显式提供） |
+| `TOSUB2_FORCE_SECURE_COOKIE` | - | `1` 强制 Cookie Secure |
+| `TOSUB2_PYTHON` / `TOSUB2_TLS_PROFILE` / `TOSUB2_LOG_LEVEL` | 自动 / - / info | 调试用 |
+
+## 从 v1 迁移
+
+```bash
+node scripts/migrate-v1.mjs --v1-root /path/to/v1/tmp/chatgpt-onboarding-console --dry-run
+node scripts/migrate-v1.mjs --v1-root ...   # 实际执行（幂等）
+```
+
+带入：sub2api 配置（加密）、Outlook 取件端点、备用池、已完成任务的 OAuth token（主号池）；凭据（DPAPI/Keychain）默认不迁移，见 docs/v2/09 §4。
+
+## 备份与恢复
+
+```bash
+node scripts/backup.mjs /path/to/backup-dir --with-secret
+# 恢复：停容器 → data/ 换回备份内容 → 起容器
+```
+
+## 测试
+
+```bash
+npm test          # server 单测 + 引擎集成测试（mock 子进程）
+npm run check     # 语法检查
+```
+
+## 目录结构
+
+```
+tosubV2/
+├── server/               # Fastify 后端
+│   ├── core/             # v1 协议复用（登录/Sentinel/TLS 指纹/取件/接码，含 --json-events 改造）
+│   ├── lib/              # db/crypto/config/settings/sanitize/totp
+│   ├── migrations/       # SQLite 迁移（PRAGMA user_version）
+│   └── modules/          # auth proxies accounts jobs sub2api settings dashboard static
+├── web/                  # React 19 + Vite + TanStack Router/Query + Tailwind4 前端
+├── scripts/              # migrate-v1 / backup
+├── data/                 # 运行数据（DB/密钥/日志/断点/产物）
+└── docs/v2/              # 设计文档
+```
+
+## 许可
+
+MIT

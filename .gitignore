@@ -1,0 +1,10 @@
+node_modules
+server/web-dist
+data
+data-backup-*
+tmp
+*.log
+gui-test-screenshots
+.env
+.DS_Store
+*.tsbuildinfo

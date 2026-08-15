@@ -1,0 +1,501 @@
+import { useEffect, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Loader2, Play, Save } from 'lucide-react';
+import { toast } from 'sonner';
+import { sub2apiApi } from '@/api';
+import { errorMessage } from '@/api/client';
+import type { Sub2ApiMonitorLog, Sub2ApiMonitorLogItem } from '@/api/types';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Textarea } from '@/components/ui/input';
+import { formatDateTime, formatRelativeTime } from '@/lib/utils';
+
+export function Sub2ApiPage() {
+  const queryClient = useQueryClient();
+  const { data: config } = useQuery({
+    queryKey: ['sub2api', 'config'],
+    queryFn: () => sub2apiApi.config(),
+  });
+  const { data: monitor } = useQuery({
+    queryKey: ['sub2api', 'monitor'],
+    queryFn: () => sub2apiApi.monitor(),
+    refetchInterval: 30_000,
+  });
+  const { data: monitorLogs } = useQuery({
+    queryKey: ['sub2api', 'monitor', 'logs'],
+    queryFn: () => sub2apiApi.monitorLogs(20),
+    refetchInterval: monitor?.running ? 5_000 : 15_000,
+  });
+
+  const [baseUrl, setBaseUrl] = useState('');
+  const [adminKey, setAdminKey] = useState('');
+  const [joinAutoUpload, setJoinAutoUpload] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  // ---- 上传默认配置（自动上传链路使用，手动上传弹窗以此为默认值） ----
+  const [groupIds, setGroupIds] = useState<number[]>([]);
+  const [concurrency, setConcurrency] = useState('');
+  const [loadFactor, setLoadFactor] = useState('');
+  const [priority, setPriority] = useState('');
+  const [modelWhitelist, setModelWhitelist] = useState('');
+  const [autoSelectProxy, setAutoSelectProxy] = useState(true);
+  const [proxyId, setProxyId] = useState('');
+  const [disable5h, setDisable5h] = useState(false);
+  const [disable7d, setDisable7d] = useState(false);
+
+  const { data: groups } = useQuery({
+    queryKey: ['sub2api', 'groups'],
+    queryFn: () => sub2apiApi.groups(),
+    enabled: Boolean(config?.base_url),
+    retry: false,
+  });
+  const { data: remoteProxies } = useQuery({
+    queryKey: ['sub2api', 'proxies'],
+    queryFn: () => sub2apiApi.proxies(),
+    enabled: Boolean(config?.base_url),
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (config && !loaded) {
+      setBaseUrl(config.base_url);
+      setJoinAutoUpload(Boolean(config.join_auto_upload));
+      const ud = config.upload_defaults ?? {};
+      setGroupIds(config.group_ids ?? []);
+      setConcurrency(ud.concurrency != null ? String(ud.concurrency) : '');
+      setLoadFactor(ud.load_factor != null ? String(ud.load_factor) : '');
+      setPriority(ud.priority != null ? String(ud.priority) : '');
+      setModelWhitelist((ud.model_whitelist ?? []).join(', '));
+      setAutoSelectProxy(ud.auto_select_proxy !== false);
+      setProxyId(ud.proxy_id != null ? String(ud.proxy_id) : '');
+      setDisable5h(Boolean(ud.disable_auto_pause_5h));
+      setDisable7d(Boolean(ud.disable_auto_pause_7d));
+      setLoaded(true);
+    }
+  }, [config, loaded]);
+
+  const uploadDefaultsState = {
+    concurrency: concurrency === '' ? null : Number(concurrency),
+    load_factor: loadFactor === '' ? null : Number(loadFactor),
+    priority: priority === '' ? null : Number(priority),
+    model_whitelist: modelWhitelist
+      .split(',')
+      .map((m) => m.trim())
+      .filter(Boolean),
+    disable_auto_pause_5h: disable5h,
+    disable_auto_pause_7d: disable7d,
+    auto_select_proxy: autoSelectProxy,
+    proxy_id: proxyId ? Number(proxyId) : null,
+  };
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      sub2apiApi.updateConfig({
+        base_url: baseUrl,
+        admin_key: adminKey,
+        join_auto_upload: joinAutoUpload,
+        group_ids: config?.group_ids ?? [],
+        upload_defaults: config?.upload_defaults ?? {},
+        monitor: monitorConfigState,
+      }),
+    onSuccess: () => {
+      toast.success('配置已保存');
+      setAdminKey('');
+      queryClient.invalidateQueries({ queryKey: ['sub2api'] });
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const saveUploadDefaultsMutation = useMutation({
+    mutationFn: () =>
+      sub2apiApi.updateConfig({
+        group_ids: groupIds,
+        upload_defaults: uploadDefaultsState,
+      }),
+    onSuccess: () => {
+      toast.success('上传默认配置已保存');
+      queryClient.invalidateQueries({ queryKey: ['sub2api'] });
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  // ---- 监控配置（独立卡片） ----
+  const [monitorEnabled, setMonitorEnabled] = useState(false);
+  const [intervalMin, setIntervalMin] = useState('5');
+  const [autoRepair, setAutoRepair] = useState(true);
+  const [maxRepair, setMaxRepair] = useState('2');
+  const [autoReplenish, setAutoReplenish] = useState(false);
+  const [reserveThreshold, setReserveThreshold] = useState('10');
+  const [cooldownMin, setCooldownMin] = useState('5');
+  const [rateLimitThreshold, setRateLimitThreshold] = useState('12');
+  const [bannedPatterns, setBannedPatterns] = useState('');
+  const [rateLimitPatterns, setRateLimitPatterns] = useState('');
+
+  useEffect(() => {
+    if (config?.monitor && !loaded) {
+      const m = config.monitor;
+      setMonitorEnabled(Boolean(m.enabled));
+      setIntervalMin(String(m.interval_minutes ?? 5));
+      setAutoRepair(m.auto_repair !== false);
+      setMaxRepair(String(m.max_repair_attempts ?? 2));
+      setAutoReplenish(Boolean(m.auto_replenish));
+      setReserveThreshold(String(m.reserve_threshold ?? 10));
+      setCooldownMin(String(m.cooldown_minutes ?? 5));
+      setRateLimitThreshold(String(m.rate_limit_reset_threshold_hours ?? 12));
+      setBannedPatterns((m.banned_patterns ?? []).join('\n'));
+      setRateLimitPatterns((m.rate_limit_patterns ?? []).join('\n'));
+    }
+  }, [config, loaded]);
+
+  const monitorConfigState = {
+    enabled: monitorEnabled,
+    interval_minutes: Number(intervalMin) || 5,
+    cooldown_minutes: Number(cooldownMin) || 5,
+    auto_repair: autoRepair,
+    max_repair_attempts: Number(maxRepair) || 2,
+    auto_replenish: autoReplenish,
+    reserve_threshold: Number(reserveThreshold) || 10,
+    pause_on_discard: true,
+    rate_limit_reset_threshold_hours: Number(rateLimitThreshold) || 12,
+    banned_patterns: bannedPatterns.split('\n').map((s) => s.trim()).filter(Boolean),
+    rate_limit_patterns: rateLimitPatterns.split('\n').map((s) => s.trim()).filter(Boolean),
+  };
+
+  const saveMonitorMutation = useMutation({
+    mutationFn: () => sub2apiApi.updateMonitor(monitorConfigState),
+    onSuccess: () => {
+      toast.success(monitorEnabled ? '监控已启用' : '监控已停用');
+      queryClient.invalidateQueries({ queryKey: ['sub2api', 'monitor'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const checkMutation = useMutation({
+    mutationFn: () => sub2apiApi.checkNow(),
+    onSuccess: ({ monitor: view }) => {
+      const r = view?.last_result;
+      toast.success(
+        r
+          ? `巡检完成：异常 ${r.error_accounts} · 限流 ${r.rate_limited ?? 0} · 废弃 ${r.discarded} · 修复中 ${r.repairing} · 补号 ${r.replenished}`
+          : '巡检完成',
+      );
+      queryClient.invalidateQueries({ queryKey: ['sub2api', 'monitor'] });
+      queryClient.invalidateQueries({ queryKey: ['sub2api', 'monitor', 'logs'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const testMutation = useMutation({
+    mutationFn: () => sub2apiApi.test(baseUrl ? { base_url: baseUrl, admin_key: adminKey || undefined } : {}),
+    onSuccess: (result) => toast.success(`连接正常（${result.groups} 个分组，${result.latency_ms}ms）`),
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  return (
+    <div className="max-w-3xl space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>连接配置</CardTitle>
+          <CardDescription>管理密钥加密存储，保存后不再回显</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-1.5">
+            <Label>后端地址</Label>
+            <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://127.0.0.1:8080" />
+          </div>
+          <div className="space-y-1.5">
+            <Label>管理员密钥</Label>
+            <Input
+              type="password"
+              value={adminKey}
+              onChange={(e) => setAdminKey(e.target.value)}
+              placeholder={config?.has_admin_key ? config.admin_key_masked : 'sk-…（保存时留空 = 不修改）'}
+            />
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <Switch checked={joinAutoUpload} onCheckedChange={setJoinAutoUpload} />
+            加入主号池成功后自动上传 sub2api（默认关闭）
+          </label>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => testMutation.mutate()} disabled={testMutation.isPending}>
+              {testMutation.isPending ? <Loader2 className="animate-spin" /> : <Play className="h-4 w-4" />}
+              测试连接
+            </Button>
+            <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
+              {saveMutation.isPending && <Loader2 className="animate-spin" />}
+              <Save className="h-4 w-4" />
+              保存配置
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>上传默认配置</CardTitle>
+          <CardDescription>
+            自动上传（加入主池自动上传 / 监控自动补号）使用这里的配置；手动批量上传时弹窗会以此为默认值
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label>上传分组（留空 = 默认分组）</Label>
+            <div className="flex max-h-32 flex-wrap gap-2 overflow-y-auto rounded-md border p-2">
+              {!config?.base_url && <span className="text-xs text-muted-foreground">请先保存连接配置后再选择分组</span>}
+              {config?.base_url && (groups?.items ?? []).length === 0 && (
+                <span className="text-xs text-muted-foreground">无可用分组（或连接不可用）</span>
+              )}
+              {(groups?.items ?? []).map((group) => (
+                <label key={group.id} className="flex items-center gap-1.5 text-sm">
+                  <Checkbox
+                    checked={groupIds.includes(group.id)}
+                    onCheckedChange={() =>
+                      setGroupIds((prev) =>
+                        prev.includes(group.id) ? prev.filter((g) => g !== group.id) : [...prev, group.id],
+                      )
+                    }
+                  />
+                  {group.name} (#{group.id})
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="space-y-1.5">
+              <Label>并发数（留空保留原值）</Label>
+              <Input value={concurrency} onChange={(e) => setConcurrency(e.target.value)} placeholder="10" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>负载因子</Label>
+              <Input value={loadFactor} onChange={(e) => setLoadFactor(e.target.value)} placeholder="1" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>优先级</Label>
+              <Input value={priority} onChange={(e) => setPriority(e.target.value)} placeholder="1" />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>模型白名单（逗号分隔，留空不限制）</Label>
+            <Input value={modelWhitelist} onChange={(e) => setModelWhitelist(e.target.value)} placeholder="gpt-5, gpt-5-mini" />
+          </div>
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-sm">
+              <Switch checked={autoSelectProxy} onCheckedChange={setAutoSelectProxy} />
+              自动绑定 sub2api 内绑定数最少的代理
+            </label>
+            {!autoSelectProxy && (
+              <select
+                value={proxyId}
+                onChange={(e) => setProxyId(e.target.value)}
+                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="">不指定代理</option>
+                {(remoteProxies?.items ?? []).map((proxy) => (
+                  <option key={proxy.id} value={proxy.id}>
+                    #{proxy.id} {proxy.name} ({proxy.host}:{proxy.port})
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          <div className="flex gap-6">
+            <label className="flex items-center gap-2 text-sm">
+              <Switch checked={disable5h} onCheckedChange={setDisable5h} />
+              禁用 5h 自动暂停
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <Switch checked={disable7d} onCheckedChange={setDisable7d} />
+              禁用 7d 自动暂停
+            </label>
+          </div>
+          <Button onClick={() => saveUploadDefaultsMutation.mutate()} disabled={saveUploadDefaultsMutation.isPending}>
+            {saveUploadDefaultsMutation.isPending && <Loader2 className="animate-spin" />}
+            <Save className="h-4 w-4" />
+            保存上传默认配置
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>号池监控</CardTitle>
+          <CardDescription>
+            {monitor?.running
+              ? '巡检进行中…'
+              : monitor?.last_check_at
+                ? `上次巡检 ${formatRelativeTime(monitor.last_check_at)} · ${
+                    monitor.last_result
+                      ? `上轮：异常 ${monitor.last_result.error_accounts} / 限流 ${monitor.last_result.rate_limited ?? 0} / 废弃 ${monitor.last_result.discarded} / 修复中 ${monitor.last_result.repairing} / 补号 ${monitor.last_result.replenished}`
+                      : '暂无结果'
+                  }`
+                : '尚未巡检'}
+            {monitor?.next_check_at && monitor.enabled ? ` · 下次 ${formatRelativeTime(monitor.next_check_at)}` : ''}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <Switch
+              checked={monitorEnabled}
+              onCheckedChange={(v) => {
+                setMonitorEnabled(v);
+              }}
+            />
+            启用监控巡检
+          </label>
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+            <div className="space-y-1.5">
+              <Label>巡检间隔（分钟）</Label>
+              <Input value={intervalMin} onChange={(e) => setIntervalMin(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>修复冷却（分钟）</Label>
+              <Input value={cooldownMin} onChange={(e) => setCooldownMin(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>修复失败上限</Label>
+              <Input value={maxRepair} onChange={(e) => setMaxRepair(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>补号阈值</Label>
+              <Input value={reserveThreshold} onChange={(e) => setReserveThreshold(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>限流废弃阈值（小时）</Label>
+              <Input value={rateLimitThreshold} onChange={(e) => setRateLimitThreshold(e.target.value)} />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            远端限流（rate limit）重置时间距今超过阈值才移废弃池；短期限流（如 5h 窗口）保留主池等待自动恢复
+          </p>
+          <label className="flex items-center gap-2 text-sm">
+            <Switch checked={autoRepair} onCheckedChange={setAutoRepair} />
+            临时错误自动重登修复
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <Switch checked={autoReplenish} onCheckedChange={setAutoReplenish} />
+            主池低于阈值自动从备用池补号
+          </label>
+          <details className="rounded-md border p-3">
+            <summary className="cursor-pointer text-sm text-muted-foreground">分类正则（高级）</summary>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label>封禁关键词（一行一条）</Label>
+                <Textarea value={bannedPatterns} onChange={(e) => setBannedPatterns(e.target.value)} className="font-mono text-xs" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>限流关键词（一行一条）</Label>
+                <Textarea value={rateLimitPatterns} onChange={(e) => setRateLimitPatterns(e.target.value)} className="font-mono text-xs" />
+              </div>
+            </div>
+          </details>
+          {monitor?.last_error && <div className="text-sm text-destructive">上轮错误：{monitor.last_error}</div>}
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => checkMutation.mutate()} disabled={checkMutation.isPending}>
+              {checkMutation.isPending && <Loader2 className="animate-spin" />}
+              立即巡检
+            </Button>
+            <Button onClick={() => saveMonitorMutation.mutate()} disabled={saveMonitorMutation.isPending}>
+              {saveMonitorMutation.isPending && <Loader2 className="animate-spin" />}
+              保存监控设置
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>巡检日志</CardTitle>
+          <CardDescription>
+            仅监控本系统上传的 OAuth 授权号（oauth---邮箱 命名的 free 号），API Key 账号与非本系统账号忽略 ·
+            最近巡检记录与每个账号的处理动作（服务端保留最近 100 轮）
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {(monitorLogs?.items ?? []).length === 0 && (
+            <div className="text-sm text-muted-foreground">暂无巡检记录，点击「立即巡检」或等待定时巡检</div>
+          )}
+          {(monitorLogs?.items ?? []).map((log) => (
+            <details
+              key={log.id}
+              className="rounded-md border p-3"
+              open={log.status === 'running' || log.status === 'failed'}
+            >
+              <summary className="flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                <span className="font-medium">{formatDateTime(log.started_at)}</span>
+                <span className="text-xs text-muted-foreground">{log.source === 'timer' ? '定时' : '手动'}</span>
+                <MonitorLogStatusBadge status={log.status} />
+                {log.status === 'done' && (
+                  <span className="text-xs text-muted-foreground">
+                    异常 {log.summary.error_accounts ?? 0} · 限流 {log.summary.rate_limited ?? 0} · 废弃{' '}
+                    {log.summary.discarded ?? 0} · 修复 {log.summary.repairing ?? 0} · 补号{' '}
+                    {log.summary.replenished ?? 0}
+                    {durationSeconds(log) != null ? ` · 耗时 ${durationSeconds(log)}s` : ''}
+                  </span>
+                )}
+                {log.status === 'failed' && log.error && <span className="text-xs text-destructive">{log.error}</span>}
+              </summary>
+              {log.items.length > 0 ? (
+                <div className="mt-2 space-y-1.5">
+                  {log.items.map((item, index) => (
+                    <MonitorLogItemRow key={index} item={item} />
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-2 text-xs text-muted-foreground">本轮无需处理的账号</div>
+              )}
+            </details>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+const MONITOR_ACTION_META: Record<string, { label: string; className: string }> = {
+  discarded: { label: '移入废弃池', className: 'text-destructive font-medium' },
+  repairing: { label: '自动修复中', className: 'text-amber-600' },
+  rate_limited_waiting: { label: '限流观察中', className: 'text-amber-600' },
+  ignored: { label: '未处理', className: 'text-muted-foreground' },
+};
+
+const MONITOR_REASON_LABELS: Record<string, string> = {
+  banned_401: '封禁/401',
+  rate_limited_429: '限流/429',
+  auto_repair: '临时错误',
+  temp_error: '临时错误',
+};
+
+function MonitorLogStatusBadge({ status }: { status: string }) {
+  if (status === 'running') return <span className="text-xs text-blue-600">进行中…</span>;
+  if (status === 'failed') return <span className="text-xs text-destructive font-medium">失败</span>;
+  return <span className="text-xs text-emerald-600">完成</span>;
+}
+
+function MonitorLogItemRow({ item }: { item: Sub2ApiMonitorLogItem }) {
+  const meta = MONITOR_ACTION_META[item.action] ?? { label: item.action, className: '' };
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
+      <span className={meta.className}>{meta.label}</span>
+      <span className="font-mono text-xs">{item.email ?? `远端#${item.remote_id ?? '?'}`}</span>
+      {item.reason && (
+        <span className="rounded bg-muted px-1.5 py-0.5 text-xs">
+          {MONITOR_REASON_LABELS[item.reason] ?? item.reason}
+        </span>
+      )}
+      {item.detail && <span className="text-xs text-muted-foreground">{item.detail}</span>}
+    </div>
+  );
+}
+
+function durationSeconds(log: Sub2ApiMonitorLog): number | null {
+  if (!log.finished_at) return null;
+  const ms = Date.parse(log.finished_at) - Date.parse(log.started_at);
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  return Math.max(1, Math.round(ms / 1000));
+}

@@ -1,0 +1,266 @@
+/** 与 05-API接口规范 一一对应的 TS 类型 */
+
+export type Pool = 'reserve' | 'main' | 'discard';
+export type JobStatus = 'queued' | 'running' | 'awaiting_input' | 'completed' | 'failed' | 'canceled';
+export type JobType = 'login' | 'refresh' | 'balance' | 'totp_setup';
+export type ProxyStatus = 'unknown' | 'alive' | 'cf_challenge' | 'dead' | 'testing';
+export type PromptKind = 'password' | 'email_otp' | 'mfa_otp' | 'totp_setup_otp' | 'phone' | 'phone_otp';
+
+export interface ApiErrorBody {
+  error: { code: string; message: string; [k: string]: unknown };
+}
+
+export interface SessionInfo {
+  authenticated: boolean;
+  password_initialized: boolean;
+  expires_at: string | null;
+  sessions_count?: number;
+}
+
+export interface SessionItem {
+  created_at: string;
+  expires_at: string;
+  last_seen_at: string;
+  ip: string | null;
+  user_agent: string | null;
+  current: boolean;
+}
+
+export interface Paged<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+  stats?: Record<string, number>;
+}
+
+export interface Proxy {
+  id: number;
+  display_url: string;
+  label: string | null;
+  protocol: string;
+  status: ProxyStatus;
+  last_latency_ms: number | null;
+  last_checked_at: string | null;
+  fail_count: number;
+  rotatable: boolean;
+  last_error: string | null;
+  created_at: string;
+}
+
+export interface ReserveAccount {
+  id: number;
+  email: string;
+  pool: 'reserve';
+  status: string;
+  initial_balance: number | null;
+  has_balance: boolean;
+  banned: boolean;
+  banned_reason: string | null;
+  mail_status: 'pending' | 'checking' | 'ok' | 'fetch_failed' | null;
+  mail_error: string | null;
+  imported_at: string | null;
+  last_checked_at: string | null;
+}
+
+export interface MainAccount {
+  id: number;
+  email: string;
+  pool: 'main';
+  status: 'active' | 'authorizing' | 'needs_reauth' | string;
+  balance: number | null;
+  balance_checked_at: string | null;
+  balance_error: string | null;
+  last_login_at: string | null;
+  sub2api_account_id: number | null;
+  sub2api_uploaded_at: string | null;
+  remote_status: string | null;
+  has_refresh_token: boolean;
+  has_password: boolean;
+  has_totp: boolean;
+  auto_repair_blocked: boolean;
+}
+
+export interface DiscardAccount {
+  id: number;
+  email: string;
+  pool: 'discard';
+  status: string;
+  discard_reason: 'banned_401' | 'rate_limited_429' | 'repair_failed' | 'login_failed' | 'manual' | null;
+  discard_detail: string | null;
+  balance: number | null;
+  banned: boolean;
+  discarded_at: string | null;
+}
+
+export type Account = ReserveAccount | MainAccount | DiscardAccount;
+
+export interface ImportResult {
+  created: number;
+  accounts?: { id: number; email: string; status: string }[];
+  duplicates_in_batch: string[];
+  duplicates_in_reserve: string[];
+  duplicates_in_main: string[];
+  duplicates_in_discard: { email: string; reason: string }[];
+  duplicates_remote: string[];
+  invalid_lines: { line: number; reason: string }[];
+}
+
+export interface ProxyImportResult {
+  created: number;
+  duplicates: string[];
+  invalid_lines: { line: number; reason: string }[];
+}
+
+export interface Job {
+  id: string;
+  account_id: number | null;
+  email: string | null;
+  type: JobType;
+  status: JobStatus;
+  stage: string | null;
+  prompt_kind: PromptKind | null;
+  attempt: number;
+  proxy_id: number | null;
+  proxy_display: string | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  has_result?: boolean;
+  can_cancel: boolean;
+  can_retry: boolean;
+  can_input: boolean;
+}
+
+export interface UploadOptions {
+  group_ids?: number[];
+  concurrency?: number | null;
+  load_factor?: number | null;
+  priority?: number | null;
+  model_whitelist?: string[];
+  disable_auto_pause_5h?: boolean;
+  disable_auto_pause_7d?: boolean;
+  auto_select_proxy?: boolean;
+  proxy_id?: number | null;
+}
+
+export interface Sub2ApiMonitorConfig {
+  enabled: boolean;
+  interval_minutes: number;
+  cooldown_minutes: number;
+  auto_repair: boolean;
+  max_repair_attempts: number;
+  auto_replenish: boolean;
+  reserve_threshold: number;
+  pause_on_discard?: boolean;
+  rate_limit_reset_threshold_hours?: number;
+  banned_patterns: string[];
+  rate_limit_patterns: string[];
+}
+
+export interface Sub2ApiMonitorLogItem {
+  email: string | null;
+  remote_id: number | null;
+  action: 'discarded' | 'repairing' | 'rate_limited_waiting' | 'ignored' | string;
+  reason: string;
+  detail: string;
+}
+
+export interface Sub2ApiMonitorLog {
+  id: number;
+  source: string;
+  started_at: string;
+  finished_at: string | null;
+  status: 'running' | 'done' | 'failed' | string;
+  error: string | null;
+  summary: {
+    error_accounts?: number;
+    rate_limited?: number;
+    discarded?: number;
+    repairing?: number;
+    replenished?: number;
+  };
+  items: Sub2ApiMonitorLogItem[];
+}
+
+export interface Sub2ApiConfigView {
+  base_url: string;
+  admin_key_masked: string;
+  has_admin_key: boolean;
+  group_ids: number[];
+  upload_defaults: UploadOptions;
+  join_auto_upload?: boolean;
+  monitor: Sub2ApiMonitorConfig;
+}
+
+export interface Sub2ApiMonitorView {
+  enabled: boolean;
+  running: boolean;
+  interval_minutes: number;
+  auto_repair: boolean;
+  max_repair_attempts: number;
+  auto_replenish: boolean;
+  reserve_threshold: number;
+  last_check_at: string | null;
+  next_check_at: string | null;
+  last_error: string | null;
+  last_result: {
+    error_accounts: number;
+    rate_limited?: number;
+    discarded: number;
+    repairing: number;
+    replenished: number;
+  } | null;
+}
+
+export interface DashboardSummary {
+  pools: { reserve: number; main: number; discard: number };
+  reserve_available: number;
+  main_active: number;
+  main_total_balance: number;
+  proxies: { alive: number; dead: number; cf_challenge: number; unknown: number };
+  jobs: { queued: number; running: number; awaiting_input: number };
+  monitor: { enabled: boolean; last_check_at: string | null; last_error: string | null; last_result: Record<string, number> | null };
+  recent_events: { email: string; type: string; detail: Record<string, unknown> | null; created_at: string }[];
+}
+
+export interface SettingsView {
+  outlook_fetch_endpoint: string;
+  max_concurrent_jobs: number;
+  job_timeout_minutes: number;
+  proxy_fail_threshold: number;
+  join_auto_upload: boolean;
+  sms: {
+    active: string;
+    providers: {
+      luban: { configured: boolean; service_id: string };
+      smsbower: { configured: boolean; country: string; country_label: string };
+      custom: { configured: boolean; count: number };
+    };
+  };
+}
+
+export const STAGE_LABELS: Record<string, string> = {
+  web_login: '进入登录',
+  email_otp: '邮箱验证码',
+  password: '密码验证',
+  mfa_otp: '两步验证',
+  totp_setup_otp: '2FA 设置',
+  about_you: '补充资料',
+  add_phone: '绑定手机',
+  phone_otp: '短信验证码',
+  oauth: 'OAuth 授权',
+  workspace: '选择工作区',
+  finalizing: '生成导入文件',
+  refreshing: '刷新令牌',
+};
+
+export const PROMPT_LABELS: Record<string, string> = {
+  password: '登录密码',
+  email_otp: '邮箱验证码',
+  mfa_otp: '两步验证码',
+  totp_setup_otp: '2FA 设置验证码',
+  phone: '手机号',
+  phone_otp: '短信验证码',
+};
