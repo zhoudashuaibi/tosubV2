@@ -5,6 +5,7 @@ import { errors } from '../../lib/http-errors.js';
 import { createPools } from './pools.js';
 import { parseImportLines, credentialsForImport } from './import.js';
 import { createMailInit } from './mail-init.js';
+import { createBanMailCheck } from './ban-mail-check.js';
 import { sanitizeText } from '../../lib/sanitize.js';
 
 const POOLS = ['reserve', 'main', 'discard'];
@@ -29,6 +30,12 @@ export function createAccountsModule({ engine, logger }) {
       db,
       getEndpoint: () => app.settings.get('outlook.fetch').endpoint,
       decryptCredentials: (account) => crypto.tryDecryptJson(account.credentials_enc, 'accounts.credentials_enc'),
+      logger,
+    });
+    const banMailCheck = createBanMailCheck({
+      db,
+      getEndpoint: () => app.settings.get('outlook.fetch').endpoint,
+      decryptCredentials: (account) => crypto.tryDecryptJson(account?.credentials_enc, 'accounts.credentials_enc'),
       logger,
     });
 
@@ -106,6 +113,8 @@ export function createAccountsModule({ engine, logger }) {
       } catch (error) {
         logger.warn({ err: error.message }, 'onPermanentFailure hook failed');
       }
+      // 邮箱辅证：拉封禁邮件比对（异步，不阻塞任务终态流转）
+      Promise.resolve(banMailCheck.check(job.account_id, { source: 'login_permanent_failure' })).catch(() => {});
     };
 
     // ---------------- 列表 ----------------

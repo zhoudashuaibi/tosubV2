@@ -1,9 +1,10 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Moon, Sun, LogOut } from 'lucide-react';
+import { LogOut, Moon, Sun } from 'lucide-react';
 import { toast } from 'sonner';
 import { authApi } from '@/api';
 import { errorMessage } from '@/api/client';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useUiStore } from '@/stores/ui';
 
 export function Header({ title }: { title: string }) {
@@ -20,19 +21,32 @@ export function Header({ title }: { title: string }) {
   });
 
   return (
-    <header className="app-header z-20 px-3 pt-3 sm:px-6 lg:px-8">
-      <div className="app-header-inner flex h-12 items-center justify-between rounded-lg border px-3 sm:px-4">
+    <header className="app-header sticky top-0 z-20 border-b px-4 lg:px-8">
+      <div className="flex h-14 items-center justify-between">
         <div className="flex min-w-0 items-center gap-3">
-          <span className="hidden h-2 w-2 shrink-0 rounded-full bg-[var(--success)] shadow-[0_0_12px_var(--success)] sm:block" />
-          <h1 className="truncate text-[15px] font-medium tracking-normal">{title}</h1>
+          <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-[10px] font-bold text-primary-foreground lg:hidden">S2</div>
+          <div className="min-w-0">
+            <div className="hidden text-xs text-muted-foreground sm:block">账号池管理</div>
+            <h1 className="truncate text-base font-semibold">{title}</h1>
+          </div>
         </div>
         <div className="flex items-center gap-1">
-          <Button variant="ghost" size="icon" onClick={toggleTheme} title="切换主题" className="rounded-md">
-            {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-          </Button>
-          <Button variant="ghost" size="icon" onClick={() => logout.mutate()} title="退出登录" className="rounded-md">
-            <LogOut className="h-4 w-4" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="切换主题">
+                {theme === 'dark' ? <Sun data-icon="inline-start" /> : <Moon data-icon="inline-start" />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{theme === 'dark' ? '切换为浅色主题' : '切换为深色主题'}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" onClick={() => logout.mutate()} aria-label="退出登录" disabled={logout.isPending}>
+                <LogOut data-icon="inline-start" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>退出登录</TooltipContent>
+          </Tooltip>
         </div>
       </div>
     </header>

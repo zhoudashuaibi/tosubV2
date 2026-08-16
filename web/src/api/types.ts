@@ -194,6 +194,35 @@ export interface Sub2ApiConfigView {
   monitor: Sub2ApiMonitorConfig;
 }
 
+export interface Sub2ApiProxyView {
+  id: number;
+  name: string;
+  protocol: string;
+  host: string;
+  port: number;
+  ip_address: string | null;
+  status: string;
+  account_count: number;
+}
+
+export interface Sub2ApiProxyReplaceResult {
+  created: { id: number; name: string; host: string; port: number }[];
+  reused: { id: number; name: string; host: string; port: number }[];
+  create_failed: { proxy: string; reason: string }[];
+  invalid_lines: { line: number; reason: string }[];
+  duplicates_in_input: number;
+  name_start: number;
+  rebound: {
+    total: number;
+    groups: { proxy_id: number; name: string; count: number }[];
+    failed_groups: { proxy_id: number; name: string; count: number; reason: string }[];
+  };
+  old_proxies: {
+    deleted: number;
+    skipped: { id: number; name: string; reason: string }[];
+  };
+}
+
 export interface Sub2ApiMonitorView {
   enabled: boolean;
   running: boolean;
@@ -264,3 +293,11 @@ export const PROMPT_LABELS: Record<string, string> = {
   phone: '手机号',
   phone_otp: '短信验证码',
 };
+
+/** 与服务端永久失败判定保持一致（含中文封禁文案），用于失败任务的封禁标注。 */
+const BANNED_ERROR_PATTERN =
+  /account_deactivated|account_deleted|account_suspended|deactivated|permanently\s+deleted|suspended|(?:账户|帐号|账号)(?:已|现已)?(?:被)?(?:停用|禁用|封禁)|【账号已停用\/封禁】/i;
+
+export function isBannedJobError(message?: string | null): boolean {
+  return BANNED_ERROR_PATTERN.test(String(message || ''));
+}

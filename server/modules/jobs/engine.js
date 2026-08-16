@@ -13,6 +13,7 @@ const ACTIVE_STATUSES = ['queued', 'running', 'awaiting_input'];
 const MAX_PROXY_SESSIONS = 10;
 const MAX_CONNECTION_FAILURES = 20;
 const BALANCE_CONCURRENCY = 5;
+const BALANCE_PROXY_ATTEMPTS = 3;
 
 export function createJobsEngine({ config, db, logger }) {
   const launcher = createLauncher({ config, logger });
@@ -144,7 +145,15 @@ export function createJobsEngine({ config, db, logger }) {
       runBalanceJob(job)
         .catch((error) => {
           logger.error({ jobId: job.id, err: error.message }, 'balance job crashed');
-          patchJob(job.id, { status: 'failed', error: sanitizeText(String(error.message)).slice(0, 500), finished_at: new Date().toISOString() });
+          const message = sanitizeText(String(error.message)).slice(0, 500);
+          if (job.account_id) {
+            db.prepare('UPDATE accounts SET balance_error=?, updated_at=? WHERE id=?').run(
+              message,
+              new Date().toISOString(),
+              job.account_id,
+            );
+          }
+          patchJob(job.id, { status: 'failed', error: message, finished_at: new Date().toISOString() });
         })
         .finally(() => {
           balanceActive -= 1;
@@ -154,32 +163,54 @@ export function createJobsEngine({ config, db, logger }) {
 
   async function runBalanceJob(job) {
     const account = stmt.getAccount.get(job.account_id);
-    if (!account || !account.tokens_enc) {
-      patchJob(job.id, { status: 'failed', error: '账号缺少 OAuth tokens', finished_at: new Date().toISOString() });
+    if (!account || !account.tokens_enc) throw new Error('账号缺少 OAuth tokens');
+    const tokens = config.cryptoTryDecryptJson(account.tokens_enc, 'accounts.tokens_enc') || {};
+    const credentials = config.cryptoTryDecryptJson(account.credentials_enc, 'accounts.credentials_enc') || {};
+
+    // 选路与登录一致：有可用代理先走代理（账号绑定代理 > 全局 alive 代理），无可用代理才本机直连。
+    // 代理连接失败/风控时换代理重试，重试耗尽直接失败，不悄悄回退本机。
+    const excludeIds = [];
+    for (let attempt = 1; ; attempt += 1) {
+      const proxy = selectProxyForJob(job, credentials, excludeIds);
+      patchJob(job.id, { proxy_id: proxy.id });
+      logger.info({ jobId: job.id, attempt, proxyId: proxy.id }, `balance job ${proxy.url ? 'via proxy' : 'direct'}`);
+
+      let result;
+      try {
+        result = await fetchChatgptCredits({
+          accessToken: tokens.access_token,
+          refreshToken: tokens.refresh_token,
+          clientId: tokens.client_id,
+          fetchImpl: (url, options) => fetchWithTls(url, options, { proxyUrl: proxy.url }),
+        });
+      } catch (error) {
+        const proxyFailure =
+          proxy.url && /PROXY_CONNECTION_RETRY|PROXY_RISK_CONTROL/.test(String(error?.message || ''));
+        if (!proxyFailure || attempt >= BALANCE_PROXY_ATTEMPTS) throw error;
+        if (proxy.id) {
+          excludeIds.push(proxy.id);
+          config.recordProxyFailure?.(proxy.id);
+        }
+        logger.warn({ jobId: job.id, proxyId: proxy.id, attempt, err: error.message }, 'balance proxy failed, switching proxy');
+        continue;
+      }
+
+      const now = new Date().toISOString();
+      db.prepare(
+        'UPDATE accounts SET balance = ?, balance_checked_at = ?, balance_error = NULL, updated_at = ? WHERE id = ?',
+      ).run(result.balance, now, now, account.id);
+      if (result.refreshedAccessToken) {
+        tokens.access_token = result.refreshedAccessToken;
+        db.prepare('UPDATE accounts SET tokens_enc = ?, updated_at = ? WHERE id = ?').run(
+          config.cryptoEncryptJson(tokens, 'accounts.tokens_enc'),
+          now,
+          account.id,
+        );
+      }
+      recordAccountEvent(account.id, 'balance_refreshed', { balance: result.balance, job_id: job.id, source: 'job' });
+      patchJob(job.id, { status: 'completed', finished_at: new Date().toISOString() });
       return;
     }
-    const tokens = config.cryptoTryDecryptJson(account.tokens_enc, 'accounts.tokens_enc') || {};
-    const proxy = config.pickProxy();
-    const result = await fetchChatgptCredits({
-      accessToken: tokens.access_token,
-      refreshToken: tokens.refresh_token,
-      clientId: tokens.client_id,
-      fetchImpl: (url, options) => fetchWithTls(url, options, { proxyUrl: proxy.url }),
-    });
-    const now = new Date().toISOString();
-    db.prepare(
-      'UPDATE accounts SET balance = ?, balance_checked_at = ?, balance_error = NULL, updated_at = ? WHERE id = ?',
-    ).run(result.balance, now, now, account.id);
-    if (result.refreshedAccessToken) {
-      tokens.access_token = result.refreshedAccessToken;
-      db.prepare('UPDATE accounts SET tokens_enc = ?, updated_at = ? WHERE id = ?').run(
-        config.cryptoEncryptJson(tokens, 'accounts.tokens_enc'),
-        now,
-        account.id,
-      );
-    }
-    recordAccountEvent(account.id, 'balance_refreshed', { balance: result.balance, job_id: job.id, source: 'job' });
-    patchJob(job.id, { status: 'completed', finished_at: new Date().toISOString() });
   }
 
   function checkTimeouts() {
@@ -236,9 +267,9 @@ export function createJobsEngine({ config, db, logger }) {
     return fresh;
   }
 
-  function selectProxyForJob(job, credentials) {
+  function selectProxyForJob(job, credentials, excludeIds = []) {
     if (credentials?.proxy_url) return { id: job.proxy_id, url: credentials.proxy_url };
-    return config.pickProxy();
+    return config.pickProxy(excludeIds);
   }
 
   // ------------------------------------------------------------------
@@ -380,6 +411,8 @@ export function createJobsEngine({ config, db, logger }) {
 
     // 永久性账号失败：标记 + 移废弃
     if (isPermanentAccountFailure(message)) {
+      // 任务错误加前缀，避免在任务中心被误读为验证码/阶段类失败
+      patchJob(job.id, { error: `【账号已停用/封禁】${message}`.slice(0, 2000) });
       if (job.account_id) {
         db.prepare('UPDATE accounts SET auto_repair_blocked = 1, updated_at = ? WHERE id = ?').run(
           new Date().toISOString(),

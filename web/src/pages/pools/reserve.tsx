@@ -18,6 +18,7 @@ import { BatchActionBar } from '@/components/batch-action-bar';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { EmptyState } from '@/components/empty-state';
 import { ImportDialog } from '@/components/import-dialog';
+import { FilterSelect } from '@/components/filter-select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatRelativeTime } from '@/lib/utils';
 
@@ -107,33 +108,35 @@ export function ReservePoolPage() {
         <Badge variant="info">加入中 {stats.joining ?? 0}</Badge>
         <div className="flex-1" />
         <div className="relative">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="搜索邮箱…"
-            className="w-56 pl-8"
+            className="h-6 w-56 pl-8"
           />
         </div>
-        <select
+        <FilterSelect
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-        >
-          <option value="">全部状态</option>
-          <option value="mail_pending">待初始化</option>
-          <option value="mail_failed">初始化失败</option>
-          <option value="joining">加入中</option>
-        </select>
+          onValueChange={setStatusFilter}
+          label="全部状态"
+          className="w-[132px]"
+          options={[
+            { value: 'mail_pending', label: '待初始化' },
+            { value: 'mail_failed', label: '初始化失败' },
+            { value: 'joining', label: '加入中' },
+          ]}
+        />
         <Button
           variant="outline"
+          size="sm"
           onClick={() => selected.size > 0 && refreshMailMutation.mutate(selectedIds)}
           disabled={selected.size === 0 || refreshMailMutation.isPending}
         >
           {refreshMailMutation.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}
           刷新邮件状态
         </Button>
-        <Button onClick={() => { setImportResult(null); setForceDiscard(false); setForceRemote(false); setImportOpen(true); }}>
+        <Button size="sm" onClick={() => { setImportResult(null); setForceDiscard(false); setForceRemote(false); setImportOpen(true); }}>
           <Upload />
           导入邮箱
         </Button>

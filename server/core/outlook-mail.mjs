@@ -308,8 +308,9 @@ export function extractBalanceFromMessages(messages) {
   return { hasBalance: false };
 }
 
-/** 封禁关键词正则。匹配 account_deactivated / account has been deactivated / has been suspended 等。 */
-const BANNED_KEYWORDS = /account(?:[\s_-]+(?:has\s+been)?)?[\s_-]*(?:deactivat\w*|suspended|disabled|permanently\s+deleted)|(?:deactivated|suspended|disabled)[\s\S]{0,60}account|your\s+account\s+(?:has\s+been\s+)?(?:deactivated|suspended|disabled|banned)/i;
+/** 封禁关键词正则。匹配 account_deactivated / account has been deactivated / has been suspended /
+ *  中文「账户已被停用 / 账号已被封禁」等（OpenAI 封禁邮件会按账号语言本地化）。 */
+const BANNED_KEYWORDS = /account(?:[\s_-]+(?:has\s+been)?)?[\s_-]*(?:deactivat\w*|suspended|disabled|permanently\s+deleted)|(?:deactivated|suspended|disabled)[\s\S]{0,60}account|your\s+account\s+(?:has\s+been\s+)?(?:deactivated|suspended|disabled|banned)|(?:账户|帐号|账号)(?:已|现已)?(?:被)?(?:停用|禁用|封禁)/i;
 
 /**
  * 扫描邮件列表判断账号是否被封禁。

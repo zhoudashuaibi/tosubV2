@@ -66,7 +66,7 @@ app.get('/api/v1/health', async () => ({
 // proxies 模块注册后，把随机选路接入引擎
 const proxiesRegister = fp(async (f) => {
   await createProxiesModule({ logger })(f);
-  engineConfig.pickProxy = () => f.proxySelector.pickRandomAliveProxy();
+  engineConfig.pickProxy = (excludeIds) => f.proxySelector.pickRandomAliveProxy(excludeIds);
   engineConfig.recordProxyFailure = (proxyId) => {
     const threshold = Number(settings.get('engine.config').proxy_fail_threshold) || 3;
     f.proxySelector.recordFailure(proxyId, threshold);

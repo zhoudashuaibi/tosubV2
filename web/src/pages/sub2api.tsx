@@ -1,17 +1,27 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Play, Save } from 'lucide-react';
+import { ArrowRightLeft, Loader2, Play, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import { sub2apiApi } from '@/api';
 import { errorMessage } from '@/api/client';
-import type { Sub2ApiMonitorLog, Sub2ApiMonitorLogItem } from '@/api/types';
+import type { Sub2ApiMonitorLog, Sub2ApiMonitorLogItem, Sub2ApiProxyReplaceResult } from '@/api/types';
+import { ConfirmDialog } from '@/components/confirm-dialog';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/input';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { formatDateTime, formatRelativeTime } from '@/lib/utils';
 
 export function Sub2ApiPage() {
@@ -59,6 +69,8 @@ export function Sub2ApiPage() {
     enabled: Boolean(config?.base_url),
     retry: false,
   });
+
+  const [replaceOpen, setReplaceOpen] = useState(false);
 
   useEffect(() => {
     if (config && !loaded) {
@@ -238,6 +250,25 @@ export function Sub2ApiPage() {
 
       <Card>
         <CardHeader>
+          <CardTitle>代理 IP 一键更换</CardTitle>
+          <CardDescription>
+            批量粘贴新代理（ip:端口:用户名:密码）自动换批：绑定在现有代理上的账号将随机均分改绑到新代理，改绑完成后删除旧代理
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="text-sm text-muted-foreground">
+            当前 sub2api 内 {(remoteProxies?.items ?? []).length} 个代理 · 绑定账号合计{' '}
+            {(remoteProxies?.items ?? []).reduce((sum, proxy) => sum + (proxy.account_count ?? 0), 0)} 个
+          </div>
+          <Button onClick={() => setReplaceOpen(true)} disabled={!config?.base_url}>
+            <ArrowRightLeft className="h-4 w-4" />
+            一键更换 IP
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>上传默认配置</CardTitle>
           <CardDescription>
             自动上传（加入主池自动上传 / 监控自动补号）使用这里的配置；手动批量上传时弹窗会以此为默认值
@@ -290,18 +321,21 @@ export function Sub2ApiPage() {
               自动绑定 sub2api 内绑定数最少的代理
             </label>
             {!autoSelectProxy && (
-              <select
-                value={proxyId}
-                onChange={(e) => setProxyId(e.target.value)}
-                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="">不指定代理</option>
-                {(remoteProxies?.items ?? []).map((proxy) => (
-                  <option key={proxy.id} value={proxy.id}>
-                    #{proxy.id} {proxy.name} ({proxy.host}:{proxy.port})
-                  </option>
-                ))}
-              </select>
+              <Select value={proxyId || '__none__'} onValueChange={(value) => setProxyId(value === '__none__' ? '' : value)}>
+                <SelectTrigger className="w-full" aria-label="指定默认上传代理">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="__none__">不指定代理</SelectItem>
+                    {(remoteProxies?.items ?? []).map((proxy) => (
+                      <SelectItem key={proxy.id} value={String(proxy.id)}>
+                        #{proxy.id} {proxy.name} ({proxy.host}:{proxy.port})
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
             )}
           </div>
           <div className="flex gap-6">
@@ -453,6 +487,156 @@ export function Sub2ApiPage() {
           ))}
         </CardContent>
       </Card>
+
+      <ReplaceProxyDialog open={replaceOpen} onOpenChange={setReplaceOpen} />
+    </div>
+  );
+}
+
+function ReplaceProxyDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const queryClient = useQueryClient();
+  const [text, setText] = useState('');
+  const [protocol, setProtocol] = useState('http');
+  const [deleteOld, setDeleteOld] = useState(true);
+  const [confirming, setConfirming] = useState(false);
+  const [result, setResult] = useState<Sub2ApiProxyReplaceResult | null>(null);
+
+  const replaceMutation = useMutation({
+    mutationFn: () => sub2apiApi.replaceProxies({ text, protocol, delete_old: deleteOld }),
+    onSuccess: (data) => {
+      setResult(data);
+      setConfirming(false);
+      const failed = data.create_failed.length + data.rebound.failed_groups.length;
+      const skipped = data.old_proxies.skipped.length;
+      const summary =
+        `更换完成：新建 ${data.created.length} · 复用 ${data.reused.length} · 改绑账号 ${data.rebound.total}` +
+        (data.rebound.failed_groups.length > 0 ? `（失败组 ${data.rebound.failed_groups.length}）` : '') +
+        ` · 删除旧代理 ${data.old_proxies.deleted}` +
+        (skipped > 0 ? `（跳过 ${skipped}）` : '');
+      if (failed > 0 || skipped > 0) toast.warning(summary);
+      else toast.success(summary);
+      queryClient.invalidateQueries({ queryKey: ['sub2api', 'proxies'] });
+    },
+    onError: (error) => {
+      setConfirming(false);
+      toast.error(errorMessage(error));
+    },
+  });
+
+  const busy = replaceMutation.isPending;
+
+  return (
+    <>
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          if (busy) return;
+          onOpenChange(next);
+          if (!next) {
+            setText('');
+            setResult(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>一键更换代理 IP</DialogTitle>
+            <DialogDescription>
+              每行一条，格式 ip:端口:用户名:密码（无认证代理可只写 ip:端口），支持 # 注释行；与现有代理完全相同的行将复用而不重建
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <Textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder={'198.23.128.39:5667:cxzoljuy:cefn2yq3q0vn\n198.23.128.40:5667:cxzoljuy:cefn2yq3q0vn'}
+              className="min-h-[160px] font-mono text-xs"
+              spellCheck={false}
+              disabled={busy}
+            />
+            <div className="grid grid-cols-2 items-end gap-3">
+              <div className="space-y-1.5">
+                <Label>代理协议</Label>
+                <Select value={protocol} onValueChange={setProtocol} disabled={busy}>
+                  <SelectTrigger aria-label="代理协议">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {['http', 'https', 'socks5', 'socks5h'].map((value) => (
+                        <SelectItem key={value} value={value}>
+                          {value}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </div>
+              <label className="flex items-center gap-2 pb-1 text-sm">
+                <Switch checked={deleteOld} onCheckedChange={setDeleteOld} disabled={busy} />
+                改绑完成后删除旧代理
+              </label>
+            </div>
+            {result && <ReplaceResultView result={result} />}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+              关闭
+            </Button>
+            <Button onClick={() => setConfirming(true)} disabled={busy || !text.trim()}>
+              {busy && <Loader2 className="animate-spin" />}
+              开始替换
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={setConfirming}
+        title="确认一键更换代理 IP？"
+        description="将创建新代理（名字自动续接编号），并把绑定在现有代理上的全部账号随机改绑到新代理；改绑完成后删除旧代理（仍有账号绑定的会自动跳过，不会误删）。此操作不可撤销。"
+        confirmText="确认替换"
+        onConfirm={() => replaceMutation.mutate()}
+        busy={busy}
+      />
+    </>
+  );
+}
+
+function ReplaceResultView({ result }: { result: Sub2ApiProxyReplaceResult }) {
+  const problems = [
+    ...result.create_failed.map((item) => `创建失败 ${item.proxy}：${item.reason}`),
+    ...result.rebound.failed_groups.map((group) => `改绑失败 ${group.name || `#${group.proxy_id}`}（${group.count} 个账号）：${group.reason}`),
+    ...result.old_proxies.skipped.map((item) => `旧代理 #${item.id} ${item.name} 未删除：${item.reason}`),
+    ...result.invalid_lines.map((item) => `第 ${item.line} 行：${item.reason}`),
+  ];
+  return (
+    <div className="space-y-2 rounded-md border p-3 text-sm">
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <span>新建 {result.created.length}（编号 {result.name_start} 起）</span>
+        <span>复用 {result.reused.length}</span>
+        {result.duplicates_in_input > 0 && <span>输入重复 {result.duplicates_in_input}</span>}
+        <span>改绑账号 {result.rebound.total}</span>
+        <span>删除旧代理 {result.old_proxies.deleted}</span>
+      </div>
+      {result.rebound.groups.length > 0 && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+          {result.rebound.groups.map((group) => (
+            <span key={group.proxy_id}>
+              {group.name || `#${group.proxy_id}`} × {group.count}
+            </span>
+          ))}
+        </div>
+      )}
+      {problems.length > 0 && (
+        <div className="space-y-1 text-xs text-destructive">
+          {problems.slice(0, 8).map((problem, index) => (
+            <div key={index}>{problem}</div>
+          ))}
+          {problems.length > 8 && <div>…共 {problems.length} 条</div>}
+        </div>
+      )}
     </div>
   );
 }

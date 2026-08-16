@@ -3,6 +3,8 @@ import { maskSecret } from '../../lib/sanitize.js';
 import { createSub2apiClient } from './client.js';
 import { createUploader } from './upload.js';
 import { createMonitor } from './monitor.js';
+import { createProxyReplacer } from './proxy-replace.js';
+import { createBanMailCheck } from '../accounts/ban-mail-check.js';
 
 const CONFIG_KEY = 'sub2api.config';
 
@@ -31,9 +33,17 @@ export function createSub2apiModule({ engine, logger }) {
       pools: app.accountsPools,
       engine,
       uploader,
+      banMailCheck: createBanMailCheck({
+        db,
+        getEndpoint: () => app.settings.get('outlook.fetch').endpoint,
+        decryptCredentials: (account) => app.crypto.tryDecryptJson(account?.credentials_enc, 'accounts.credentials_enc'),
+        logger,
+      }),
       logger,
     });
     app.decorate('sub2apiMonitor', monitor);
+
+    const proxyReplacer = createProxyReplacer({ client, logger });
 
     // 引擎 hook：refresh 任务成功（tokens 回写）→ 推送新凭据到远端（监控自动修复场景）
     const previousHandler = engine.hooks.onTokensSaved;
@@ -150,7 +160,7 @@ export function createSub2apiModule({ engine, logger }) {
     });
 
     app.get('/api/v1/sub2api/proxies', async () => {
-      const payload = await client.listProxies();
+      const payload = await client.listProxies({ withCount: true });
       const proxies = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : [];
       return {
         items: proxies.map((proxy) => ({
@@ -161,9 +171,35 @@ export function createSub2apiModule({ engine, logger }) {
           port: proxy.port,
           ip_address: proxy.ip_address ?? null,
           status: proxy.status ?? 'active',
+          account_count: Number(proxy.account_count ?? 0) || 0,
         })),
       };
     });
+
+    // 一键更换代理 IP：创建新代理 → 旧代理上的账号随机均分改绑 → 删除旧代理
+    app.post(
+      '/api/v1/sub2api/proxies/replace',
+      {
+        schema: {
+          body: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['text'],
+            properties: {
+              text: { type: 'string', minLength: 1 },
+              protocol: { type: 'string', enum: ['http', 'https', 'socks5', 'socks5h'] },
+              delete_old: { type: 'boolean' },
+            },
+          },
+        },
+      },
+      async (request) =>
+        proxyReplacer.replaceProxies({
+          text: request.body.text,
+          protocol: request.body.protocol || 'http',
+          deleteOld: request.body.delete_old !== false,
+        }),
+    );
 
     app.get('/api/v1/sub2api/remote-accounts', async (request) => {
       const email = String(request.query.email || '').trim().toLowerCase();

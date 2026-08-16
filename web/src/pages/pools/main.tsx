@@ -19,6 +19,7 @@ import { StatusBadge } from '@/components/status-badge';
 import { BatchActionBar } from '@/components/batch-action-bar';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { EmptyState } from '@/components/empty-state';
+import { FilterSelect } from '@/components/filter-select';
 import {
   Dialog,
   DialogContent,
@@ -27,6 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { formatRelativeTime } from '@/lib/utils';
 
 export function MainPoolPage() {
@@ -129,24 +131,25 @@ export function MainPoolPage() {
         <Badge variant="secondary">已上传 {stats.uploaded ?? 0}</Badge>
         <div className="flex-1" />
         <div className="relative">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索邮箱…" className="w-56 pl-8" />
+          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索邮箱…" className="h-6 w-56 pl-8" />
         </div>
-        <select
+        <FilterSelect
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-        >
-          <option value="">全部状态</option>
-          <option value="active">可用</option>
-          <option value="authorizing">授权中</option>
-          <option value="needs_reauth">待重新授权</option>
-        </select>
+          onValueChange={setStatusFilter}
+          label="全部状态"
+          className="w-[132px]"
+          options={[
+            { value: 'active', label: '可用' },
+            { value: 'authorizing', label: '授权中' },
+            { value: 'needs_reauth', label: '待重新授权' },
+          ]}
+        />
         <Button variant={sortBalance ? 'default' : 'outline'} size="sm" onClick={() => setSortBalance((v) => !v)}>
           <Coins />
           余额排序
         </Button>
-        <Button variant="outline" onClick={() => setAddOpen(true)}>
+        <Button variant="outline" size="sm" onClick={() => setAddOpen(true)}>
           <Plus />
           添加账号
         </Button>
@@ -457,18 +460,21 @@ function UploadConfigDialog({
               自动绑定 sub2api 内绑定数最少的代理
             </label>
             {!autoSelectProxy && (
-              <select
-                value={proxyId}
-                onChange={(e) => setProxyId(e.target.value)}
-                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="">不指定代理</option>
-                {(remoteProxies?.items ?? []).map((proxy) => (
-                  <option key={proxy.id} value={proxy.id}>
-                    #{proxy.id} {proxy.name} ({proxy.host}:{proxy.port})
-                  </option>
-                ))}
-              </select>
+              <Select value={proxyId || '__none__'} onValueChange={(value) => setProxyId(value === '__none__' ? '' : value)}>
+                <SelectTrigger className="w-full" aria-label="指定上传代理">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="__none__">不指定代理</SelectItem>
+                    {(remoteProxies?.items ?? []).map((proxy) => (
+                      <SelectItem key={proxy.id} value={String(proxy.id)}>
+                        #{proxy.id} {proxy.name} ({proxy.host}:{proxy.port})
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
             )}
           </div>
           <div className="flex gap-6">

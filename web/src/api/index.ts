@@ -16,6 +16,8 @@ import type {
   Sub2ApiConfigView,
   Sub2ApiMonitorLog,
   Sub2ApiMonitorView,
+  Sub2ApiProxyReplaceResult,
+  Sub2ApiProxyView,
   UploadOptions,
 } from './types';
 
@@ -117,10 +119,9 @@ export const sub2apiApi = {
   test: (body: { base_url?: string; admin_key?: string } = {}) =>
     api<{ ok: boolean; groups: number; latency_ms: number }>('/sub2api/test', { json: body }),
   groups: () => api<{ items: { id: number; name: string; status: string }[] }>('/sub2api/groups'),
-  proxies: () =>
-    api<{ items: { id: number; name: string; protocol: string; host: string; port: number; status: string }[] }>(
-      '/sub2api/proxies',
-    ),
+  proxies: () => api<{ items: Sub2ApiProxyView[] }>('/sub2api/proxies'),
+  replaceProxies: (body: { text: string; protocol: string; delete_old: boolean }) =>
+    api<Sub2ApiProxyReplaceResult>('/sub2api/proxies/replace', { json: body }),
   remoteAccount: (email: string) =>
     api<{ found: boolean; account: { id: number; name: string; status: string; error_message: string | null } | null }>(
       `/sub2api/remote-accounts?email=${encodeURIComponent(email)}`,

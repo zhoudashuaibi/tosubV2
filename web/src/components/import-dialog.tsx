@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { CheckCircle2, AlertTriangle, XCircle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -40,15 +40,16 @@ export function ImportDialog({
 }) {
   const [text, setText] = useState('');
 
-  useEffect(() => {
-    if (!open) {
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
       setText('');
       onClosed?.();
     }
-  }, [open, onClosed]);
+    onOpenChange(nextOpen);
+  };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
@@ -63,7 +64,7 @@ export function ImportDialog({
         />
         {result && <ImportResultView result={result} />}
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+          <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={busy}>
             关闭
           </Button>
           <Button onClick={() => onSubmit(text)} disabled={busy || !text.trim()}>

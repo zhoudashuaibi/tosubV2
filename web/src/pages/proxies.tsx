@@ -16,6 +16,7 @@ import { BatchActionBar } from '@/components/batch-action-bar';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { EmptyState } from '@/components/empty-state';
 import { ImportDialog } from '@/components/import-dialog';
+import { FilterSelect } from '@/components/filter-select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatRelativeTime } from '@/lib/utils';
 
@@ -100,25 +101,26 @@ export function ProxiesPage() {
         {testing > 0 && <Badge variant="info"><Loader2 className="h-3 w-3 animate-spin" /> 测试中 {testing}</Badge>}
         <div className="flex-1" />
         <div className="relative">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索代理/备注…" className="w-52 pl-8" />
+          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索代理/备注…" className="h-6 w-52 pl-8" />
         </div>
-        <select
+        <FilterSelect
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-        >
-          <option value="">全部状态</option>
-          <option value="alive">可用</option>
-          <option value="dead">失效</option>
-          <option value="cf_challenge">被CF拦截</option>
-          <option value="unknown">未测</option>
-        </select>
-        <Button variant="outline" onClick={() => testMutation.mutate(undefined)} disabled={testMutation.isPending}>
+          onValueChange={setStatusFilter}
+          label="全部状态"
+          className="w-[132px]"
+          options={[
+            { value: 'alive', label: '可用' },
+            { value: 'dead', label: '失效' },
+            { value: 'cf_challenge', label: '被 CF 拦截' },
+            { value: 'unknown', label: '未测' },
+          ]}
+        />
+        <Button variant="outline" size="sm" onClick={() => testMutation.mutate(undefined)} disabled={testMutation.isPending}>
           <Activity />
           测试全部连通性
         </Button>
-        <Button onClick={() => { setImportResult(null); setImportOpen(true); }}>
+        <Button size="sm" onClick={() => { setImportResult(null); setImportOpen(true); }}>
           <Upload />
           批量导入
         </Button>

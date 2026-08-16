@@ -50,26 +50,26 @@ export function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-4 sm:p-6">
-      <Card className="w-full max-w-[calc(100vw-2rem)] sm:max-w-[400px] overflow-hidden">
-        <CardHeader className="border-b bg-muted/35 px-6 py-7 text-center">
-          <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-md border border-primary/30 bg-primary text-sm font-bold text-primary-foreground shadow-[0_0_24px_color-mix(in_srgb,var(--primary)_28%,transparent)]">
+    <div className="flex min-h-dvh items-center justify-center bg-background p-4 sm:p-6">
+      <Card className="w-full max-w-sm overflow-hidden">
+        <CardHeader className="gap-2 border-b px-6 py-7 text-center">
+          <div className="mx-auto mb-2 flex size-10 items-center justify-center rounded-md bg-primary text-sm font-semibold text-primary-foreground">
             S2
           </div>
-          <div className="font-mono text-[10px] tracking-[0.16em] text-muted-foreground">TO SUB 2 / ACCESS</div>
-          <CardTitle className="mt-2 text-xl font-medium">toSub2 控制台</CardTitle>
-          <CardDescription className="mt-1.5">
+          <div className="text-xs text-muted-foreground">账户访问</div>
+          <CardTitle className="text-lg font-semibold">toSub2 控制台</CardTitle>
+          <CardDescription>
             {isSetup ? '首次访问，请设置访问密码' : '请输入访问密码'}
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4 p-6 pt-6">
+        <CardContent className="flex flex-col gap-4 p-6 pt-6">
           {isSetup && (
             <div className="flex items-start gap-2 rounded-md border border-[var(--warning)]/20 bg-[var(--warning)]/10 p-3 text-xs text-[var(--warning)]">
               <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
               系统部署在公网，请设置强密码（至少 8 位）。密码用于保护账号凭据与令牌。
             </div>
           )}
-          <div className="space-y-2">
+          <div className="flex flex-col gap-2">
             <Label htmlFor="password">{isSetup ? '设置访问密码' : '访问密码'}</Label>
             <Input
               id="password"
@@ -82,7 +82,7 @@ export function LoginPage() {
             />
           </div>
           {isSetup && (
-            <div className="space-y-2">
+            <div className="flex flex-col gap-2">
               <Label htmlFor="confirm">确认密码</Label>
               <Input
                 id="confirm"

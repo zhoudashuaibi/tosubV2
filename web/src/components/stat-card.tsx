@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 
 export function StatCard({
@@ -16,25 +16,27 @@ export function StatCard({
   tone?: 'default' | 'success' | 'warning' | 'danger' | 'info';
 }) {
   return (
-    <Card className="relative overflow-hidden">
-      <CardContent className="relative min-h-[116px] p-5">
-        <div className="pr-12 text-xs text-muted-foreground">{title}</div>
-        <div className="mt-2 font-mono text-[28px] font-medium leading-none tracking-[-0.02em]">{value}</div>
-        {sub && <div className="mt-3 truncate text-xs text-muted-foreground/80">{sub}</div>}
+    <Card className="relative overflow-hidden border-border/90">
+      <CardHeader className="flex-row items-center justify-between gap-3 px-5 pt-5 pb-0">
+        <CardTitle className="text-xs font-medium text-muted-foreground">{title}</CardTitle>
         {Icon && (
           <div
             className={cn(
-              'absolute right-5 top-5 flex h-9 w-9 items-center justify-center rounded-md border',
-              tone === 'success' && 'bg-[var(--success)]/15 text-[var(--success)]',
-              tone === 'warning' && 'bg-[var(--warning)]/15 text-[var(--warning)]',
-              tone === 'danger' && 'border-destructive/20 bg-destructive/15 text-destructive',
-              tone === 'info' && 'border-primary/20 bg-primary/15 text-primary',
+              'flex size-8 shrink-0 items-center justify-center rounded-md border',
+              tone === 'success' && 'border-[var(--success)]/20 bg-[var(--success)]/10 text-[var(--success)]',
+              tone === 'warning' && 'border-[var(--warning)]/20 bg-[var(--warning)]/10 text-[var(--warning)]',
+              tone === 'danger' && 'border-destructive/20 bg-destructive/10 text-destructive',
+              tone === 'info' && 'border-[var(--info)]/20 bg-[var(--info)]/10 text-[var(--info)]',
               tone === 'default' && 'bg-muted text-muted-foreground',
             )}
           >
-            <Icon className="h-4 w-4" />
+            <Icon className="size-4" />
           </div>
         )}
+      </CardHeader>
+      <CardContent className="px-5 pt-3 pb-5">
+        <div className="text-2xl font-semibold leading-none">{value}</div>
+        {sub && <div className="mt-2 truncate text-xs text-muted-foreground">{sub}</div>}
       </CardContent>
     </Card>
   );

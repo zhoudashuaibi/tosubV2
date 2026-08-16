@@ -4,7 +4,7 @@ import { ChevronDown, ChevronRight, Download, ListChecks, Loader2, Send, RotateC
 import { toast } from 'sonner';
 import { jobsApi } from '@/api';
 import { download, errorMessage } from '@/api/client';
-import { PROMPT_LABELS, STAGE_LABELS } from '@/api/types';
+import { PROMPT_LABELS, STAGE_LABELS, isBannedJobError } from '@/api/types';
 import type { Job } from '@/api/types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -15,6 +15,7 @@ import { StatusBadge } from '@/components/status-badge';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { EmptyState } from '@/components/empty-state';
 import { LogViewer } from '@/components/log-viewer';
+import { FilterSelect } from '@/components/filter-select';
 import { formatDateTime, formatRelativeTime } from '@/lib/utils';
 
 const TYPE_LABELS: Record<string, string> = {
@@ -88,18 +89,19 @@ export function JobsPage() {
         <Badge variant="info">进行中 {stats.running}</Badge>
         <Badge variant="warning">待输入 {stats.awaiting_input}</Badge>
         <div className="flex-1" />
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索邮箱…" className="w-48" />
-        <select
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索邮箱…" className="h-6 w-48" />
+        <FilterSelect
           value={typeFilter}
-          onChange={(e) => setTypeFilter(e.target.value)}
-          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-        >
-          <option value="">全部类型</option>
-          <option value="login">登录</option>
-          <option value="refresh">刷新</option>
-          <option value="balance">余额</option>
-          <option value="totp_setup">2FA</option>
-        </select>
+          onValueChange={setTypeFilter}
+          label="全部类型"
+          className="w-[124px]"
+          options={[
+            { value: 'login', label: '登录' },
+            { value: 'refresh', label: '刷新' },
+            { value: 'balance', label: '余额' },
+            { value: 'totp_setup', label: '2FA' },
+          ]}
+        />
         <Button variant="destructive" size="sm" onClick={() => setCancelAllOpen(true)}>
           <XCircle />
           取消全部
@@ -222,7 +224,11 @@ function JobRow({
         <TableCell>
           <div className="flex items-center gap-1.5">
             <StatusBadge domain="job" value={job.status} />
-            {job.stage && <span className="text-xs text-muted-foreground">{STAGE_LABELS[job.stage] ?? job.stage}</span>}
+            {job.status === 'failed' && isBannedJobError(job.error) ? (
+              <Badge variant="danger">账号封禁/停用</Badge>
+            ) : (
+              job.stage && <span className="text-xs text-muted-foreground">{STAGE_LABELS[job.stage] ?? job.stage}</span>
+            )}
           </div>
         </TableCell>
         <TableCell className="text-xs">{job.attempt}</TableCell>

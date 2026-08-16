@@ -14,7 +14,7 @@ import { sanitizeText } from '../../lib/sanitize.js';
 const PERMANENT_PATTERN = /account_deactivated|account_deleted|account_suspended|deactivated|permanently\s+deleted/i;
 const LOG_ROUNDS_RETAINED = 100;
 
-export function createMonitor({ db, crypto, client, getConfig, pools, engine, uploader, logger }) {
+export function createMonitor({ db, crypto, client, getConfig, pools, engine, uploader, banMailCheck, logger }) {
   const state = {
     running: false,
     timer: null,
@@ -213,6 +213,7 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
 
         if (bannedPatterns.some((re) => re.test(errorMessage))) {
           await discardLocal(local, 'banned_401', errorMessage, remote, monitor);
+          corroborateBan(local, 'monitor_banned_pattern');
           result.discarded += 1;
           items.push({ email, remote_id: remote?.id, action: 'discarded', reason: 'banned_401', detail: errorMessage });
           continue;
@@ -229,6 +230,7 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
             local.id,
           );
           await discardLocal(local, 'banned_401', errorMessage, remote, monitor);
+          corroborateBan(local, 'monitor_permanent_pattern');
           result.discarded += 1;
           items.push({ email, remote_id: remote?.id, action: 'discarded', reason: 'banned_401', detail: errorMessage });
           continue;
@@ -278,6 +280,11 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
         logger.warn({ accountId: local.id, err: error.message }, 'pause remote on discard failed');
       }
     }
+  }
+
+  /** 封禁废弃后的邮箱辅证：拉封禁邮件比对（异步，失败只记事件）。 */
+  function corroborateBan(local, source) {
+    Promise.resolve(banMailCheck?.check(local.id, { source })).catch(() => {});
   }
 
   /** 自动修复资格：无活跃任务、未封禁、不在冷却期、修复失败次数未达上限。 */

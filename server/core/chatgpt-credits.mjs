@@ -13,7 +13,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
  *
  * @param {object} params - { accessToken, refreshToken, clientId?, fetchImpl?, timeoutMs? }
  * @returns {Promise<{balance: number, hasCredits: boolean, unlimited: boolean, planType: string|null, refreshedAccessToken?: string}>}
- *   balance 为 credits.balance 转成的数值；无 credits 字段时为 0。
+ *   balance 为 credits.balance / 25 换算成的美元数额（25 credits = $1，与邮件提取余额口径一致）；无 credits 字段时为 0。
  *   refreshedAccessToken 仅在发生刷新时返回，调用方应据此更新存储的 access_token。
  */
 export async function fetchChatgptCredits(params) {
@@ -98,7 +98,7 @@ function parseUsage(json) {
   const balanceRaw = credits && typeof credits.balance !== "undefined" ? credits.balance : null;
   const balance = Number(balanceRaw);
   return {
-    balance: Number.isFinite(balance) ? balance : 0,
+    balance: Number.isFinite(balance) ? balance / 25 : 0,
     hasCredits: Boolean(credits && credits.has_credits),
     unlimited: Boolean(credits && credits.unlimited),
     planType: typeof json?.plan_type === "string" ? json.plan_type : null,

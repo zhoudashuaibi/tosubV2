@@ -53,8 +53,20 @@ export function createSub2apiClient(getConfig) {
     return request('/api/v1/admin/groups/all?platform=openai');
   }
 
-  function listProxies() {
-    return request('/api/v1/admin/proxies/all');
+  function listProxies({ withCount = false } = {}) {
+    return request(`/api/v1/admin/proxies/all${withCount ? '?with_count=true' : ''}`);
+  }
+
+  function createProxy(proxy) {
+    return request('/api/v1/admin/proxies', { method: 'POST', body: JSON.stringify(proxy) });
+  }
+
+  function deleteProxiesBatch(ids) {
+    return request('/api/v1/admin/proxies/batch-delete', { method: 'POST', body: JSON.stringify({ ids }) });
+  }
+
+  function bulkUpdateAccounts(payload) {
+    return request('/api/v1/admin/accounts/bulk-update', { method: 'POST', body: JSON.stringify(payload) });
   }
 
   async function listAllOpenAiAccounts({ status = null } = {}, configOverride = null) {
@@ -143,6 +155,9 @@ export function createSub2apiClient(getConfig) {
     request,
     listGroups,
     listProxies,
+    createProxy,
+    deleteProxiesBatch,
+    bulkUpdateAccounts,
     listAllOpenAiAccounts,
     getAccount,
     createAccountsBatch,
