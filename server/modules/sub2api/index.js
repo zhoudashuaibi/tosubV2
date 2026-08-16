@@ -43,7 +43,7 @@ export function createSub2apiModule({ engine, logger }) {
     });
     app.decorate('sub2apiMonitor', monitor);
 
-    const proxyReplacer = createProxyReplacer({ client, logger });
+    const replaceProxies = createProxyReplacer({ client, logger });
 
     // 引擎 hook：refresh 任务成功（tokens 回写）→ 推送新凭据到远端（监控自动修复场景）
     const previousHandler = engine.hooks.onTokensSaved;
@@ -194,7 +194,7 @@ export function createSub2apiModule({ engine, logger }) {
         },
       },
       async (request) =>
-        proxyReplacer.replaceProxies({
+        replaceProxies({
           text: request.body.text,
           protocol: request.body.protocol || 'http',
           deleteOld: request.body.delete_old !== false,

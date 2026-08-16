@@ -101,7 +101,7 @@ export function distributeAccounts(accountIds, targets) {
 
 function unwrapPayload(payload) {
   if (Array.isArray(payload)) return payload;
-  if (payload && typeof payload === 'object' && Array.isArray(payload.data)) return payload.data;
+  if (payload && typeof payload === 'object' && payload.data !== undefined) return payload.data;
   return payload;
 }
 
