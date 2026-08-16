@@ -286,9 +286,15 @@ function sortMessagesByTime(messages) {
   });
 }
 
+/** 余额邮件关键词。英文 "We've added X credits"、中文「已添加 X 额度」（会按账号语言本地化），balance = 数值 / 25。 */
+const BALANCE_KEYWORDS = [
+  /we[\s']*ve\s+added\s+([\d,]+(?:\.\d+)?)\s+credits\b/i,
+  /添加(?:了)?\s*([\d,]+(?:\.\d+)?)\s*(?:个)?\s*额度/i,
+];
+
 /**
  * 从邮件列表提取余额信息。
- * 匹配 "We've added X credits" 邮件，balance = credits / 25。
+ * 匹配 "We've added X credits" / 中文「账户添加 X 额度」邮件，balance = credits / 25。
  * 取最近一封匹配邮件的数值。
  * @param {Array} messages
  * @returns {{balance:number,hasBalance:true}|{hasBalance:false}}
@@ -297,11 +303,13 @@ export function extractBalanceFromMessages(messages) {
   const sorted = sortMessagesByTime(messages);
   for (const message of sorted) {
     const source = reserveMessageText(message);
-    const match = source.match(/we[\s']*ve\s+added\s+([\d,]+(?:\.\d+)?)\s+credits\b/i);
-    if (match) {
-      const credits = Number(match[1].replace(/,/g, ""));
-      if (Number.isFinite(credits)) {
-        return { balance: credits / 25, hasBalance: true };
+    for (const pattern of BALANCE_KEYWORDS) {
+      const match = source.match(pattern);
+      if (match) {
+        const credits = Number(match[1].replace(/,/g, ""));
+        if (Number.isFinite(credits)) {
+          return { balance: credits / 25, hasBalance: true };
+        }
       }
     }
   }

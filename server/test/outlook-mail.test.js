@@ -47,6 +47,27 @@ test('余额邮件解析保持不变', () => {
   assert.equal(result.balance, 4);
 });
 
+test('余额邮件解析：中文「添加 X 额度」同样除以 25', () => {
+  const result = extractBalanceFromMessages([message('额度通知', '已为每人的账户添加 1000 额度，感谢您的支持。')]);
+  assert.equal(result.hasBalance, true);
+  assert.equal(result.balance, 40);
+});
+
+test('余额邮件解析：中文变体（添加了/千分位/无空格）', () => {
+  const withLe = extractBalanceFromMessages([message('额度', '我们已向您的账户添加了 1,250 额度。')]);
+  assert.equal(withLe.hasBalance, true);
+  assert.equal(withLe.balance, 50);
+
+  const noSpace = extractBalanceFromMessages([message('额度', '您的账户已添加500额度')]);
+  assert.equal(noSpace.hasBalance, true);
+  assert.equal(noSpace.balance, 20);
+});
+
+test('余额邮件解析：无关键字的中文邮件不误判', () => {
+  const result = extractBalanceFromMessages([message('验证码', '您的验证码是 1000，请在 5 分钟内输入。')]);
+  assert.equal(result.hasBalance, false);
+});
+
 function mockDb(row) {
   const events = [];
   const updates = [];
