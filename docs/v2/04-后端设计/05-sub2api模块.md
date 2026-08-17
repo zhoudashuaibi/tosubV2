@@ -106,7 +106,7 @@ flowchart TD
     E -- 是 --> F[强制重登 forceRelogin<br/>成功→PUT 新凭据+clear-error+schedulable]
     E -- 否/失败 --> G[冷却 5 分钟<br/>累计失败≥max_repair_attempts → 移入废弃池 repair_failed]
     B -- 不在本地 --> H[跳过（非本系统上传）]
-    T2[补号检查] --> I{auto_replenish 开启<br/>且 monitored 组内 active+oauth--- 前缀数 < threshold}
+    T2[补号检查] --> I{auto_replenish 开启<br/>且可用数 < threshold：本地主池号 × 远端状态<br/>（监控分组内、type=oauth、非 error、非限流中）<br/>+ reserve 池在途 joining}
     I -- 是 --> J[从备用池挑号 join-main<br/>（有余额优先）直至补足/池空]
 ```
 
@@ -117,6 +117,7 @@ flowchart TD
 - 永久性失败关键字（account_deactivated/deleted/suspended）→ `auto_repair_blocked=1` 永久跳过 + 直接移废弃池。
 - 修复成功：新凭据 PUT 到远端（按 `sub2api_account_id` 定位，不新增账号）+ `clear-error` + `schedulable`。
 - **移废弃池的动作全部经过号池模块的事务函数**（04-04 §5.1），保证审计与状态一致。
+- 补号计数以**本地主池为准 × 远端实际状态**联合判断：已废弃但远端未删的号、他人上传的号、远端已删除的本地号都不计入；限流中（429）与 error（401）的号不计入；reserve 池在途 joining（有活跃任务）计入可用，防止在途期间重复触发。
 - 补号并发：单轮最多同时发起 `min(3, 空缺数)` 个 join，其余等下一轮（避免任务槽被补号占满）。
 - 巡检结果写 `account_events` 并在 `GET /api/v1/sub2api/monitor` 暴露 `last_check_at / next_check_at / last_error / last_result{discarded, repairing, replenished}`。
 

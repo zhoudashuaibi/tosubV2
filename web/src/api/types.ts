@@ -240,6 +240,7 @@ export interface Sub2ApiMonitorView {
     discarded: number;
     repairing: number;
     replenished: number;
+    available_count?: number | null;
   } | null;
 }
 

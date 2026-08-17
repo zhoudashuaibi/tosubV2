@@ -193,7 +193,7 @@ export function Sub2ApiPage() {
       const r = view?.last_result;
       toast.success(
         r
-          ? `巡检完成：异常 ${r.error_accounts} · 限流 ${r.rate_limited ?? 0} · 废弃 ${r.discarded} · 修复中 ${r.repairing} · 补号 ${r.replenished}`
+          ? `巡检完成：异常 ${r.error_accounts} · 限流 ${r.rate_limited ?? 0} · 废弃 ${r.discarded} · 修复中 ${r.repairing} · 补号 ${r.replenished}${r.available_count != null ? ` · 可用 ${r.available_count}` : ''}`
           : '巡检完成',
       );
       queryClient.invalidateQueries({ queryKey: ['sub2api', 'monitor'] });
@@ -365,7 +365,7 @@ export function Sub2ApiPage() {
               : monitor?.last_check_at
                 ? `上次巡检 ${formatRelativeTime(monitor.last_check_at)} · ${
                     monitor.last_result
-                      ? `上轮：异常 ${monitor.last_result.error_accounts} / 限流 ${monitor.last_result.rate_limited ?? 0} / 废弃 ${monitor.last_result.discarded} / 修复中 ${monitor.last_result.repairing} / 补号 ${monitor.last_result.replenished}`
+                      ? `上轮：异常 ${monitor.last_result.error_accounts} / 限流 ${monitor.last_result.rate_limited ?? 0} / 废弃 ${monitor.last_result.discarded} / 修复中 ${monitor.last_result.repairing} / 补号 ${monitor.last_result.replenished}${monitor.last_result.available_count != null ? ` / 可用 ${monitor.last_result.available_count}` : ''}`
                       : '暂无结果'
                   }`
                 : '尚未巡检'}

@@ -7,7 +7,7 @@ import { sanitizeText } from '../../lib/sanitize.js';
  *  - OAuth 号限流不写 status=error，用 rate_limited_at 判定：重置时间超过阈值 → 移废弃池，否则保留观察
  *  - banned_401 / rate_limited_429 → 移废弃池（可选 pause 远端）
  *  - 临时错误 → 自动重登修复（冷却 5 分钟，失败 N 次移 repair_failed）
- *  - 主池可用数低于阈值 → 自动从备用池补号（有余额优先）
+ *  - 主池可用数（本地主池 × 远端非 error/非限流 + 在途 joining）低于阈值 → 自动从备用池补号（有余额优先）
  * 单实例互斥；每轮结果与每账号动作写 monitor_logs，保留最近 100 轮。
  */
 
@@ -247,7 +247,9 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
 
       // 自动补号
       if (monitor.auto_replenish) {
-        result.replenished = await replenishIfNeeded(monitor, config, accounts);
+        const replenish = await replenishIfNeeded(monitor, config, accounts);
+        result.replenished = replenish.replenished;
+        result.available_count = replenish.available;
       }
 
       state.lastCheckAt = new Date().toISOString();
@@ -319,17 +321,43 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
     return true;
   }
 
+  /**
+   * 自动补号：以本地主池为准 × 远端实际状态联合计数，避免只看远端导致的计数虚高：
+   *  - 可用 = 本地 pool=main 的号在远端（监控分组内、type=oauth）非 error 且非限流中
+   *  - 在途 = reserve 池 joining 且有活跃任务（登录上传即将上线），计入可用防止在途期间重复触发
+   *  - 已废弃号远端未删、他人上传的号、远端已被删除的本地号，一律不计入
+   */
   async function replenishIfNeeded(monitor, config, accounts = null) {
     const threshold = Number(monitor.reserve_threshold) || 10;
     const groupIds = Array.isArray(config.group_ids) ? config.group_ids : [];
     try {
       const allAccounts = accounts ?? (await client.listAllOpenAiAccounts());
-      const monitoredAccounts = allAccounts.filter((account) => inMonitoredGroups(account, groupIds));
-      const activeCount = monitoredAccounts.filter(
-        (account) => String(account.status || 'active') === 'active' && String(account.name || '').startsWith('oauth---'),
-      ).length;
-      if (activeCount >= threshold) return 0;
-      const gap = threshold - activeCount;
+      const remoteByEmail = new Map();
+      for (const remote of allAccounts) {
+        if (String(remote.type || 'oauth') !== 'oauth') continue;
+        if (!inMonitoredGroups(remote, groupIds)) continue;
+        const email = client.accountEmail(remote);
+        if (email) remoteByEmail.set(email, remote);
+      }
+      const localMain = db.prepare(`SELECT email FROM accounts WHERE pool='main'`).all();
+      let activeCount = 0;
+      for (const row of localMain) {
+        const remote = remoteByEmail.get(String(row.email || '').toLowerCase());
+        if (!remote) continue;
+        if (String(remote.status || 'active') === 'error') continue;
+        if (client.accountRateLimit(remote).limited_now) continue;
+        activeCount += 1;
+      }
+      const joining = db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM accounts a
+           WHERE a.pool='reserve' AND a.status='joining'
+             AND EXISTS (SELECT 1 FROM jobs j WHERE j.account_id=a.id AND j.status IN ('queued','running','awaiting_input'))`,
+        )
+        .get().n;
+      const available = activeCount + joining;
+      if (available >= threshold) return { replenished: 0, available };
+      const gap = threshold - available;
       // 从备用池挑号：有余额优先、未封禁、idle
       const candidates = db
         .prepare(
@@ -337,7 +365,7 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
            ORDER BY has_balance DESC, initial_balance DESC, imported_at ASC LIMIT ?`,
         )
         .all(Math.min(3, gap));
-      if (!candidates.length) return 0;
+      if (!candidates.length) return { replenished: 0, available };
       for (const candidate of candidates) {
         const now = new Date().toISOString();
         const tx = db.transaction(() => {
@@ -350,10 +378,10 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
         });
         tx();
       }
-      return candidates.length;
+      return { replenished: candidates.length, available };
     } catch (error) {
       logger.warn({ err: error.message }, 'replenish check failed');
-      return 0;
+      return { replenished: 0, available: null };
     }
   }
 
