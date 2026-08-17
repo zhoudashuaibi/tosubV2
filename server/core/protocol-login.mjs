@@ -656,19 +656,28 @@ async function run() {
     if (codex?.callbackUrl && codex?.codeVerifier && !args.noSub2apiExport && outputMode !== "session") {
       console.log("[6/6] Convert OAuth callback to sub2api import");
       emitStageEvent("finalizing");
-      const sub2apiExport = await buildSub2apiOauthExport({
-        authBase,
-        callbackUrl: codex.callbackUrl,
-        codeVerifier: codex.codeVerifier,
-        clientId: args.codexClientId || DEFAULT_CODEX_CLIENT_ID,
-        redirectUri: args.codexRedirectUri || DEFAULT_CODEX_REDIRECT_URI,
-        accountName: args.sub2apiName,
-        concurrency: args.concurrency,
-        priority: args.priority,
-        rateMultiplier: args.rateMultiplier,
-        transport,
-        cookie: client.jar.headerFor(authBase),
-      });
+      let sub2apiExport;
+      try {
+        sub2apiExport = await buildSub2apiOauthExport({
+          authBase,
+          callbackUrl: codex.callbackUrl,
+          codeVerifier: codex.codeVerifier,
+          clientId: args.codexClientId || DEFAULT_CODEX_CLIENT_ID,
+          redirectUri: args.codexRedirectUri || DEFAULT_CODEX_REDIRECT_URI,
+          accountName: args.sub2apiName,
+          concurrency: args.concurrency,
+          priority: args.priority,
+          rateMultiplier: args.rateMultiplier,
+          transport,
+          cookie: client.jar.headerFor(authBase),
+        });
+      } catch (error) {
+        if (isExpiredCheckpointError(error)) {
+          console.log("[auth-expired] Saved OAuth code is no longer exchangeable; removing checkpoint before failing.");
+          await removeProtocolCheckpoint(checkpointPath);
+        }
+        throw error;
+      }
       await writeJsonAtomic(sub2apiOutPath, sub2apiExport.data);
       await removeProtocolCheckpoint(checkpointPath);
       console.log(`[ok] Saved sub2api import: ${sub2apiOutPath}`);
@@ -1263,6 +1272,7 @@ async function runCodexOauth(client, options) {
 
   const authorized = await client.follow(authUrl);
   if (isLocalCallback(authorized.finalUrl)) {
+    ensureCallbackHasOAuthCode(authorized.finalUrl);
     const result = { callbackUrl: authorized.finalUrl, codeVerifier, state };
     await options.saveCheckpoint?.("callback_ready", { oauth: result });
     return result;
@@ -1320,6 +1330,7 @@ async function resumeCodexOauth(client, options, checkpoint) {
   const oauth = checkpoint.oauth || {};
   if (!oauth.codeVerifier || !oauth.state) throw new Error("CHECKPOINT_INVALID: missing OAuth PKCE state");
   if (checkpoint.stage === "callback_ready" && oauth.callbackUrl) {
+    ensureCallbackHasOAuthCode(oauth.callbackUrl);
     return {
       callbackUrl: oauth.callbackUrl,
       codeVerifier: oauth.codeVerifier,
@@ -1372,8 +1383,10 @@ async function finishCodexOauth(client, options, initial, oauth) {
   }
 
   const continued = await continueFlow(client, current);
+  const callbackUrl = continued?.finalUrl || current?.continue_url || null;
+  ensureCallbackHasOAuthCode(callbackUrl);
   const result = {
-    callbackUrl: continued?.finalUrl || current?.continue_url || null,
+    callbackUrl,
     codeVerifier: oauth.codeVerifier,
     state: oauth.state,
     workspaceId: workspaceId || null,
@@ -1541,7 +1554,7 @@ async function buildSub2apiOauthExport({
 }) {
   const callback = new URL(callbackUrl);
   const code = callback.searchParams.get("code");
-  if (!code) throw new Error("Codex callback URL does not contain OAuth code.");
+  if (!code) throw new Error("CHECKPOINT_INVALID: Codex callback URL does not contain OAuth code.");
 
   const tokenSet = await exchangeOAuthCode({
     authBase,
@@ -1640,6 +1653,11 @@ async function exchangeOAuthCode({ authBase, clientId, code, codeVerifier, redir
   }
   if (!res.ok) {
     const message = data?.error_description || data?.error || JSON.stringify(data).slice(0, 180);
+    if (String(data?.error || "").toLowerCase() === "invalid_grant") {
+      throw new Error(
+        `CHECKPOINT_INVALID: Token exchange failed with HTTP ${res.status}: ${message}. The OAuth code was already used or expired.`,
+      );
+    }
     throw new Error(`Token exchange failed with HTTP ${res.status}: ${message}`);
   }
   for (const key of ["access_token", "refresh_token", "id_token"]) {
@@ -2192,6 +2210,21 @@ function isLocalCallback(url) {
   } catch {
     return false;
   }
+}
+
+// Rejects callback URLs that carry error=... instead of a code (e.g. the OAuth
+// server denied the consent because its verifier was already consumed). Must
+// throw with the CHECKPOINT_INVALID prefix so the callers drop the checkpoint
+// and restart a fresh email login instead of persisting the poisoned URL.
+function ensureCallbackHasOAuthCode(callbackUrl) {
+  if (!callbackUrl || !isLocalCallback(callbackUrl)) return;
+  const parsed = new URL(callbackUrl);
+  if (parsed.searchParams.get("code")) return;
+  const error = parsed.searchParams.get("error") || "missing code";
+  const description = parsed.searchParams.get("error_description") || "";
+  throw new Error(
+    `CHECKPOINT_INVALID: Codex OAuth callback was rejected (${error}${description ? `: ${description}` : ""}); the consent verifier cannot be reused.`,
+  );
 }
 
 function isAuthLoginPage(value) {
