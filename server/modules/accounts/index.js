@@ -219,6 +219,16 @@ export function createAccountsModule({ engine, logger }) {
         const stats = {};
         for (const row of rows) stats[row.status] = row.n;
         stats.banned = rows.reduce((sum, row) => sum + (row.banned || 0), 0);
+        // 余额统计：已知初始余额（has_balance=1）求和 + 计数，未知余额不计入
+        const aggregate = db
+          .prepare(
+            `SELECT COALESCE(SUM(initial_balance),0) AS total_balance,
+                    SUM(CASE WHEN has_balance=1 THEN 1 ELSE 0 END) AS with_balance
+             FROM accounts WHERE pool='reserve'`,
+          )
+          .get();
+        stats.total_balance = Number(aggregate.total_balance || 0);
+        stats.with_balance = Number(aggregate.with_balance || 0);
         return stats;
       }
       if (pool === 'main') {

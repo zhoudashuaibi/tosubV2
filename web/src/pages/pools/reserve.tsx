@@ -97,6 +97,10 @@ export function ReservePoolPage() {
   const items = data?.items ?? [];
   const selectedIds = useMemo(() => [...selected], [selected]);
   const stats = data?.stats ?? {};
+  const selectedBalance = useMemo(
+    () => items.filter((i) => selected.has(i.id) && i.has_balance).reduce((sum, i) => sum + (i.initial_balance ?? 0), 0),
+    [items, selected],
+  );
 
   const toggleAll = () => {
     setSelected((prev) => (prev.size === items.length ? new Set() : new Set(items.map((i) => i.id))));
@@ -109,6 +113,10 @@ export function ReservePoolPage() {
         <Badge variant="success">可用 {stats.banned !== undefined ? (data?.total ?? 0) - (stats.banned ?? 0) - (stats.joining ?? 0) : '—'}</Badge>
         <Badge variant="danger">已封禁 {stats.banned ?? 0}</Badge>
         <Badge variant="info">加入中 {stats.joining ?? 0}</Badge>
+        <Badge variant="muted">
+          总余额 ${(stats.total_balance ?? 0).toFixed(2)}
+          <span className="ml-1 text-muted-foreground">（{stats.with_balance ?? 0} 个已知余额）</span>
+        </Badge>
         <div className="flex-1" />
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -253,7 +261,7 @@ export function ReservePoolPage() {
         )}
       </div>
 
-      <BatchActionBar count={selected.size} onClear={() => setSelected(new Set())}>
+      <BatchActionBar count={selected.size} onClear={() => setSelected(new Set())} extra={`合计余额 $${selectedBalance.toFixed(2)}`}>
         <Button size="sm" onClick={() => joinMutation.mutate(selectedIds)} disabled={joinMutation.isPending}>
           {joinMutation.isPending && <Loader2 className="animate-spin" />}
           批量加入主号池
