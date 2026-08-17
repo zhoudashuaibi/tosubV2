@@ -193,7 +193,7 @@ export function Sub2ApiPage() {
       const r = view?.last_result;
       toast.success(
         r
-          ? `巡检完成：异常 ${r.error_accounts} · 限流 ${r.rate_limited ?? 0} · 废弃 ${r.discarded} · 修复中 ${r.repairing} · 补号 ${r.replenished}${r.available_count != null ? ` · 可用 ${r.available_count}` : ''}`
+          ? `巡检完成：异常 ${r.error_accounts} · 限流 ${r.rate_limited ?? 0} · 废弃 ${r.discarded} · 修复中 ${r.repairing} · 上传 ${r.uploaded ?? 0} · 补号 ${r.replenished}${r.available_count != null ? ` · 可用 ${r.available_count}` : ''}`
           : '巡检完成',
       );
       queryClient.invalidateQueries({ queryKey: ['sub2api', 'monitor'] });
@@ -365,7 +365,7 @@ export function Sub2ApiPage() {
               : monitor?.last_check_at
                 ? `上次巡检 ${formatRelativeTime(monitor.last_check_at)} · ${
                     monitor.last_result
-                      ? `上轮：异常 ${monitor.last_result.error_accounts} / 限流 ${monitor.last_result.rate_limited ?? 0} / 废弃 ${monitor.last_result.discarded} / 修复中 ${monitor.last_result.repairing} / 补号 ${monitor.last_result.replenished}${monitor.last_result.available_count != null ? ` / 可用 ${monitor.last_result.available_count}` : ''}`
+                      ? `上轮：异常 ${monitor.last_result.error_accounts} / 限流 ${monitor.last_result.rate_limited ?? 0} / 废弃 ${monitor.last_result.discarded} / 修复中 ${monitor.last_result.repairing} / 上传 ${monitor.last_result.uploaded ?? 0} / 补号 ${monitor.last_result.replenished}${monitor.last_result.available_count != null ? ` / 可用 ${monitor.last_result.available_count}` : ''}${monitor.last_result.stock_count != null ? ` / 主池库存 ${monitor.last_result.stock_count}` : ''}`
                       : '暂无结果'
                   }`
                 : '尚未巡检'}
@@ -396,7 +396,7 @@ export function Sub2ApiPage() {
               <Input value={maxRepair} onChange={(e) => setMaxRepair(e.target.value)} />
             </div>
             <div className="space-y-1.5">
-              <Label>补号阈值</Label>
+              <Label>保底数量（sub2api / 主池库存）</Label>
               <Input value={reserveThreshold} onChange={(e) => setReserveThreshold(e.target.value)} />
             </div>
             <div className="space-y-1.5">
@@ -413,7 +413,7 @@ export function Sub2ApiPage() {
           </label>
           <label className="flex items-center gap-2 text-sm">
             <Switch checked={autoReplenish} onCheckedChange={setAutoReplenish} />
-            主池低于阈值自动从备用池补号
+            低于保底自动补号：sub2api 缺号优先上传主池库存，主池库存低于保底再从备用池登录补入
           </label>
           <details className="rounded-md border p-3">
             <summary className="cursor-pointer text-sm text-muted-foreground">分类正则（高级）</summary>

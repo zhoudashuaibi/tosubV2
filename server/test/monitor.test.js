@@ -18,17 +18,17 @@ function setup() {
   const db = openDatabase(dataDir, { logger });
   const crypto = createCrypto({ dataDir, secretKeyEnv: 'test-secret', logger });
   const pools = createPools(db, crypto);
-  return { dataDir, db, crypto, pools, submitted: [], remoteAccounts: [] };
+  return { dataDir, db, crypto, pools, submitted: [], uploads: [], remoteAccounts: [] };
 }
 
-function insertAccount(db, { email, pool = 'main', status = 'active' }) {
+function insertAccount(db, { email, pool = 'main', status = 'active', tokens = false, balance = null }) {
   const now = new Date().toISOString();
   const result = db
     .prepare(
-      `INSERT INTO accounts(email, pool, status, mail_status, imported_at, created_at, updated_at)
-       VALUES(?,?,?,?,?,?,?)`,
+      `INSERT INTO accounts(email, pool, status, mail_status, tokens_enc, balance, imported_at, created_at, updated_at)
+       VALUES(?,?,?,?,?,?,?,?,?)`,
     )
-    .run(email, pool, status, 'ok', now, now, now);
+    .run(email, pool, status, 'ok', tokens ? 'enc-blob' : null, balance, now, now, now);
   return Number(result.lastInsertRowid);
 }
 
@@ -93,7 +93,12 @@ function buildMonitor({ threshold = 10, remoteAccounts = [], autoRepair = false 
     getConfig,
     pools: ctx.pools,
     engine: { submitJob: (job) => ctx.submitted.push(job) },
-    uploader: null,
+    uploader: {
+      uploadAccounts: async (ids, options) => {
+        ctx.uploads.push({ ids: [...ids], options });
+        return { created: ids.length, updated: 0, failed: [], updated_account_ids: [] };
+      },
+    },
     banMailCheck: null,
     logger,
   });
@@ -198,11 +203,12 @@ test('补号计数：已废弃号远端未删不计入', async () => {
   assert.equal(view.last_result.replenished, 1);
 });
 
-test('补号计数：reserve 池在途 joining（有活跃任务）计入可用，不重复补号', async () => {
+test('补号计数：reserve 池在途 joining（有活跃任务）计入可用与库存，按缺口补足不超发', async () => {
   insertAccount(ctx.db, { email: 'ok@test.local' });
   const joiningId = insertAccount(ctx.db, { email: 'inflight@test.local', pool: 'reserve', status: 'joining' });
   insertRunningJob(ctx.db, joiningId);
-  insertAccount(ctx.db, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
+  insertAccount(ctx.db, { email: 'c1@test.local', pool: 'reserve', status: 'mail_ok' });
+  insertAccount(ctx.db, { email: 'c2@test.local', pool: 'reserve', status: 'mail_ok' });
   const monitor = buildMonitor({
     threshold: 2,
     remoteAccounts: [remoteAccount({ id: 1, email: 'ok@test.local' })],
@@ -211,8 +217,9 @@ test('补号计数：reserve 池在途 joining（有活跃任务）计入可用�
   const view = await monitor.runCheck();
 
   assert.equal(view.last_result.available_count, 2);
-  assert.equal(view.last_result.replenished, 0);
-  assert.equal(ctx.submitted.length, 0);
+  // 在途 joining 计入库存（库存 1）→ 只补 1 个到保底 2，而不是把 2 个候选全发出去
+  assert.equal(view.last_result.replenished, 1);
+  assert.equal(ctx.submitted.length, 1);
 });
 
 test('补号计数：僵尸 joining（无活跃任务）不计入可用', async () => {
@@ -244,4 +251,97 @@ test('补号并发：单轮最多补 3 个', async () => {
   assert.equal(view.last_result.available_count, 0);
   assert.equal(view.last_result.replenished, 3);
   assert.equal(ctx.submitted.length, 3);
+});
+
+test('级联补号：库存充足（补完缺口仍不低于保底）时备用池不动；余额小/未知余额的先上', async () => {
+  insertAccount(ctx.db, { email: 'ok@test.local' });
+  const unknownId = insertAccount(ctx.db, { email: 'unknown@test.local', tokens: true });
+  const smallId = insertAccount(ctx.db, { email: 'small@test.local', tokens: true, balance: 3 });
+  for (const email of ['big@test.local', 's4@test.local', 's5@test.local']) {
+    insertAccount(ctx.db, { email, tokens: true, balance: 20 });
+  }
+  insertAccount(ctx.db, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
+  const monitor = buildMonitor({
+    threshold: 3,
+    remoteAccounts: [remoteAccount({ id: 1, email: 'ok@test.local' })],
+  });
+
+  const view = await monitor.runCheck();
+
+  // 可用 1、缺口 2：库存 5 个，上传 2 后剩余 3 仍等于保底 → 备用池不动
+  assert.equal(view.last_result.available_count, 1);
+  assert.equal(view.last_result.uploaded, 2);
+  assert.equal(ctx.uploads.length, 1);
+  // 未知余额（NULL 视为 0）与余额小的先上传
+  assert.deepEqual(ctx.uploads[0].ids, [unknownId, smallId]);
+  assert.equal(view.last_result.replenished, 0);
+  assert.equal(ctx.submitted.length, 0);
+  assert.equal(view.last_result.stock_count, 3);
+});
+
+test('级联补号：库存补不满缺口时，上传全部库存并从备用池登录补库存', async () => {
+  insertAccount(ctx.db, { email: 'ok@test.local' });
+  insertAccount(ctx.db, { email: 's1@test.local', tokens: true });
+  insertAccount(ctx.db, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
+  insertAccount(ctx.db, { email: 'cand2@test.local', pool: 'reserve', status: 'mail_ok' });
+  const monitor = buildMonitor({
+    threshold: 4,
+    remoteAccounts: [remoteAccount({ id: 1, email: 'ok@test.local' })],
+  });
+
+  const view = await monitor.runCheck();
+
+  // 可用 1、缺口 3：库存 1 个全部上传，剩余库存 0 低于保底 4 → 备用池登录补入 min(3, 4) 个，候选只有 2
+  assert.equal(view.last_result.uploaded, 1);
+  assert.equal(ctx.uploads[0].ids.length, 1);
+  assert.equal(view.last_result.replenished, 2);
+  assert.equal(ctx.submitted.length, 2);
+  assert.equal(ctx.submitted[0].type, 'login');
+  assert.equal(view.last_result.stock_count, 0);
+});
+
+test('级联补号：sub2api 可用够（无缺口），主池库存低于保底仍从备用池登录补库存', async () => {
+  const emails = ['a@test.local', 'b@test.local', 'c@test.local'];
+  for (const email of emails) insertAccount(ctx.db, { email });
+  insertAccount(ctx.db, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
+  const monitor = buildMonitor({
+    threshold: 3,
+    remoteAccounts: emails.map((email, i) => remoteAccount({ id: i + 1, email })),
+  });
+
+  const view = await monitor.runCheck();
+
+  // 无缺口不上传，但库存 0 低于保底 3 → 备用池登录补入 min(3, 3) 个，候选只有 1
+  assert.equal(view.last_result.available_count, 3);
+  assert.equal(view.last_result.uploaded, 0);
+  assert.equal(ctx.uploads.length, 0);
+  assert.equal(view.last_result.replenished, 1);
+  assert.equal(ctx.submitted.length, 1);
+  assert.equal(view.last_result.stock_count, 0);
+});
+
+test('级联补号：远端已存在的主池号不重复上传', async () => {
+  insertAccount(ctx.db, { email: 'ok@test.local' });
+  // 远端已存在（短期限流中，保留主池）：不进上传候选
+  insertAccount(ctx.db, { email: 'dupe@test.local', tokens: true });
+  const freshId = insertAccount(ctx.db, { email: 'fresh@test.local', tokens: true });
+  const monitor = buildMonitor({
+    threshold: 2,
+    remoteAccounts: [
+      remoteAccount({ id: 1, email: 'ok@test.local' }),
+      remoteAccount({
+        id: 2,
+        email: 'dupe@test.local',
+        rateLimitedAt: new Date().toISOString(),
+        resetAt: new Date(Date.now() + 3600_000).toISOString(),
+      }),
+    ],
+  });
+
+  const view = await monitor.runCheck();
+
+  // 可用 1、缺口 1：只上传 fresh，dupe 在远端已存在被跳过；缺口补满后备用池不动
+  assert.equal(view.last_result.uploaded, 1);
+  assert.deepEqual(ctx.uploads[0].ids, [freshId]);
+  assert.equal(view.last_result.replenished, 0);
 });

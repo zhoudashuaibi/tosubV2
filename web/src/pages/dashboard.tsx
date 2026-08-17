@@ -94,7 +94,8 @@ export function DashboardPage() {
             {data.monitor.last_result && (
               <div>
                 上轮结果：废弃 {data.monitor.last_result.discarded ?? 0} · 修复中{' '}
-                {data.monitor.last_result.repairing ?? 0} · 补号 {data.monitor.last_result.replenished ?? 0}
+                {data.monitor.last_result.repairing ?? 0} · 上传 {data.monitor.last_result.uploaded ?? 0} · 补号{' '}
+                {data.monitor.last_result.replenished ?? 0}
               </div>
             )}
             {data.monitor.last_error && <div className="text-destructive">错误：{data.monitor.last_error}</div>}

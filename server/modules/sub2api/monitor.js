@@ -7,7 +7,9 @@ import { sanitizeText } from '../../lib/sanitize.js';
  *  - OAuth 号限流不写 status=error，用 rate_limited_at 判定：重置时间超过阈值 → 移废弃池，否则保留观察
  *  - banned_401 / rate_limited_429 → 移废弃池（可选 pause 远端）
  *  - 临时错误 → 自动重登修复（冷却 5 分钟，失败 N 次移 repair_failed）
- *  - 主池可用数（本地主池 × 远端非 error/非限流 + 在途 joining）低于阈值 → 自动从备用池补号（有余额优先）
+ *  - 自动补号（同一保底阈值双重约束）：sub2api 可用数（本地主池 × 远端非 error/非限流 + 在途 joining）
+ *    低于阈值 → 先从主池库存（未上传 sub2api 的 active 号，余额小优先）直接上传补缺口；
+ *    主池库存（扣除本轮上传 + 在途登录）低于同一阈值 → 从备用池登录补入主池（每轮最多 3 个），下轮按需上传
  * 单实例互斥；每轮结果与每账号动作写 monitor_logs，保留最近 100 轮。
  */
 
@@ -149,7 +151,7 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
     state.running = true;
     const logId = startLog(source);
     const items = [];
-    const result = { error_accounts: 0, rate_limited: 0, discarded: 0, repairing: 0, replenished: 0 };
+    const result = { error_accounts: 0, rate_limited: 0, discarded: 0, repairing: 0, uploaded: 0, replenished: 0 };
     let accounts = null;
     try {
       const monitor = monitorConfig();
@@ -245,11 +247,13 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
         }
       }
 
-      // 自动补号
+      // 自动补号（级联：主池库存上传 + 备用池登录）
       if (monitor.auto_replenish) {
-        const replenish = await replenishIfNeeded(monitor, config, accounts);
+        const replenish = await replenishIfNeeded(monitor, config, accounts, items);
         result.replenished = replenish.replenished;
+        result.uploaded = replenish.uploaded;
         result.available_count = replenish.available;
+        result.stock_count = replenish.stock_count;
       }
 
       state.lastCheckAt = new Date().toISOString();
@@ -323,11 +327,13 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
 
   /**
    * 自动补号：以本地主池为准 × 远端实际状态联合计数，避免只看远端导致的计数虚高：
-   *  - 可用 = 本地 pool=main 的号在远端（监控分组内、type=oauth）非 error 且非限流中
-   *  - 在途 = reserve 池 joining 且有活跃任务（登录上传即将上线），计入可用防止在途期间重复触发
-   *  - 已废弃号远端未删、他人上传的号、远端已被删除的本地号，一律不计入
+   *  - 可用 = 本地 pool=main 的号在远端（监控分组内、type=oauth）非 error 且非限流中 + 在途 joining
+   *  - 第一段：可用低于保底阈值 → 优先把主池库存（未上传远端的 active 号，余额小优先）直接上传补缺口
+   *  - 第二段：主池库存（扣除本轮上传 + 在途 joining）低于同一阈值 → 从备用池登录补入主池（每轮最多 3 个），
+   *    不必等库存耗尽；下轮巡检再按需上传
+   *  - 已废弃号远端未删、他人上传的号、远端已被删除的本地号，一律不计入可用
    */
-  async function replenishIfNeeded(monitor, config, accounts = null) {
+  async function replenishIfNeeded(monitor, config, accounts = null, items = []) {
     const threshold = Number(monitor.reserve_threshold) || 10;
     const groupIds = Array.isArray(config.group_ids) ? config.group_ids : [];
     try {
@@ -356,32 +362,85 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
         )
         .get().n;
       const available = activeCount + joining;
-      if (available >= threshold) return { replenished: 0, available };
-      const gap = threshold - available;
-      // 从备用池挑号：有余额优先、未封禁、idle
-      const candidates = db
+
+      // 主池库存：active、有 tokens、无活跃任务、未封禁，且远端尚不存在（按邮箱匹配，防重复上传）
+      const stock = db
         .prepare(
-          `SELECT id FROM accounts WHERE pool='reserve' AND banned=0 AND status IN ('mail_pending','mail_failed','mail_ok')
-           ORDER BY has_balance DESC, initial_balance DESC, imported_at ASC LIMIT ?`,
+          `SELECT a.id, a.email FROM accounts a
+           WHERE a.pool='main' AND a.status='active' AND a.banned=0 AND a.tokens_enc IS NOT NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM jobs j WHERE j.account_id=a.id AND j.status IN ('queued','running','awaiting_input')
+             )
+           ORDER BY COALESCE(a.balance, a.initial_balance, 0) ASC, a.imported_at ASC`,
         )
-        .all(Math.min(3, gap));
-      if (!candidates.length) return { replenished: 0, available };
-      for (const candidate of candidates) {
-        const now = new Date().toISOString();
-        const tx = db.transaction(() => {
-          const cas = db
-            .prepare(`UPDATE accounts SET status='joining', updated_at=? WHERE id=? AND pool='reserve' AND status != 'joining'`)
-            .run(now, candidate.id);
-          if (cas.changes === 0) return;
-          pools.recordEvent(candidate.id, 'join_started', { source: 'monitor_replenish' });
-          engine.submitJob({ accountId: candidate.id, type: 'login', note: '自动补号' });
-        });
-        tx();
+        .all()
+        .filter((row) => !remoteByEmail.has(String(row.email || '').toLowerCase()));
+
+      // 第一段：sub2api 缺口 → 直接上传主池库存补足（余额小优先）
+      let uploaded = 0;
+      const gap = threshold - available;
+      if (gap > 0 && stock.length && uploader) {
+        const targets = stock.slice(0, gap);
+        try {
+          const outcome = await uploader.uploadAccounts(
+            targets.map((row) => row.id),
+            {},
+          );
+          uploaded = Number(outcome?.created || 0) + Number(outcome?.updated || 0);
+          const failedById = new Map((outcome?.failed || []).map((fail) => [fail.id, fail]));
+          for (const row of targets) {
+            const fail = failedById.get(row.id);
+            items.push(
+              fail
+                ? {
+                    email: row.email,
+                    remote_id: null,
+                    action: 'upload_failed',
+                    reason: 'replenish',
+                    detail: String(fail.error || '').slice(0, 300),
+                  }
+                : {
+                    email: row.email,
+                    remote_id: null,
+                    action: 'uploaded',
+                    reason: 'replenish',
+                    detail: `可用 ${available} 低于 ${threshold}，从主池库存上传`,
+                  },
+            );
+          }
+        } catch (error) {
+          logger.warn({ err: error.message }, 'replenish upload failed');
+        }
       }
-      return { replenished: candidates.length, available };
+
+      // 第二段：主池库存（扣除本轮上传 + 在途 joining）低于同一阈值 → 从备用池登录补入（每轮最多 3 个，不必等库存耗尽）
+      let replenished = 0;
+      const remainingStock = Math.max(0, stock.length - uploaded) + joining;
+      if (remainingStock < threshold) {
+        const candidates = db
+          .prepare(
+            `SELECT id FROM accounts WHERE pool='reserve' AND banned=0 AND status IN ('mail_pending','mail_failed','mail_ok')
+             ORDER BY has_balance DESC, initial_balance DESC, imported_at ASC LIMIT ?`,
+          )
+          .all(Math.min(3, threshold - remainingStock));
+        for (const candidate of candidates) {
+          const now = new Date().toISOString();
+          const tx = db.transaction(() => {
+            const cas = db
+              .prepare(`UPDATE accounts SET status='joining', updated_at=? WHERE id=? AND pool='reserve' AND status != 'joining'`)
+              .run(now, candidate.id);
+            if (cas.changes === 0) return;
+            pools.recordEvent(candidate.id, 'join_started', { source: 'monitor_replenish' });
+            engine.submitJob({ accountId: candidate.id, type: 'login', note: '自动补号' });
+          });
+          tx();
+        }
+        replenished = candidates.length;
+      }
+      return { replenished, uploaded, available, stock_count: remainingStock };
     } catch (error) {
       logger.warn({ err: error.message }, 'replenish check failed');
-      return { replenished: 0, available: null };
+      return { replenished: 0, uploaded: 0, available: null, stock_count: null };
     }
   }
 

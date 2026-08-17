@@ -179,7 +179,10 @@ export interface Sub2ApiMonitorLog {
     rate_limited?: number;
     discarded?: number;
     repairing?: number;
+    uploaded?: number;
     replenished?: number;
+    available_count?: number | null;
+    stock_count?: number | null;
   };
   items: Sub2ApiMonitorLogItem[];
 }
@@ -239,8 +242,10 @@ export interface Sub2ApiMonitorView {
     rate_limited?: number;
     discarded: number;
     repairing: number;
+    uploaded?: number;
     replenished: number;
     available_count?: number | null;
+    stock_count?: number | null;
   } | null;
 }
 
