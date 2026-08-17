@@ -162,7 +162,7 @@ export interface Sub2ApiMonitorConfig {
 export interface Sub2ApiMonitorLogItem {
   email: string | null;
   remote_id: number | null;
-  action: 'discarded' | 'repairing' | 'rate_limited_waiting' | 'ignored' | string;
+  action: 'discarded' | 'repairing' | 'ban_unconfirmed' | 'rate_limited_waiting' | 'uploaded' | 'upload_failed' | 'ignored' | string;
   reason: string;
   detail: string;
 }
@@ -175,9 +175,11 @@ export interface Sub2ApiMonitorLog {
   status: 'running' | 'done' | 'failed' | string;
   error: string | null;
   summary: {
+    scanned?: number;
     error_accounts?: number;
     rate_limited?: number;
     discarded?: number;
+    ban_unconfirmed?: number;
     repairing?: number;
     uploaded?: number;
     replenished?: number;
@@ -238,9 +240,11 @@ export interface Sub2ApiMonitorView {
   next_check_at: string | null;
   last_error: string | null;
   last_result: {
+    scanned?: number;
     error_accounts: number;
     rate_limited?: number;
     discarded: number;
+    ban_unconfirmed?: number;
     repairing: number;
     uploaded?: number;
     replenished: number;

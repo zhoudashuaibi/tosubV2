@@ -186,6 +186,7 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
         const local = email ? localByEmail.get(email.toLowerCase()) : null;
         if (local) tracked.push({ remote, local, email });
       }
+      result.scanned = tracked.length;
       const errorMonitored = tracked.filter(({ remote }) => String(remote.status || '') === 'error');
       result.error_accounts = errorMonitored.length;
 

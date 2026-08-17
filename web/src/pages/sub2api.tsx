@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowRightLeft, Loader2, Play, Save } from 'lucide-react';
+import { ArrowRightLeft, ChevronRight, Loader2, Play, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import { sub2apiApi } from '@/api';
 import { errorMessage } from '@/api/client';
 import type { Sub2ApiMonitorLog, Sub2ApiMonitorLogItem, Sub2ApiProxyReplaceResult } from '@/api/types';
+import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -22,7 +23,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/input';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { formatDateTime, formatRelativeTime } from '@/lib/utils';
+import { cn, formatDateTime, formatRelativeTime } from '@/lib/utils';
 
 export function Sub2ApiPage() {
   const queryClient = useQueryClient();
@@ -193,7 +194,7 @@ export function Sub2ApiPage() {
       const r = view?.last_result;
       toast.success(
         r
-          ? `巡检完成：异常 ${r.error_accounts} · 限流 ${r.rate_limited ?? 0} · 废弃 ${r.discarded} · 修复中 ${r.repairing} · 上传 ${r.uploaded ?? 0} · 补号 ${r.replenished}${r.available_count != null ? ` · 可用 ${r.available_count}` : ''}`
+          ? `巡检完成：扫描 ${r.scanned ?? 0} · 异常 ${r.error_accounts} · 限流 ${r.rate_limited ?? 0} · 废弃 ${r.discarded} · 待辅证 ${r.ban_unconfirmed ?? 0} · 修复中 ${r.repairing} · 上传 ${r.uploaded ?? 0} · 补号 ${r.replenished}${r.available_count != null ? ` · 可用 ${r.available_count}` : ''}`
           : '巡检完成',
       );
       queryClient.invalidateQueries({ queryKey: ['sub2api', 'monitor'] });
@@ -365,7 +366,7 @@ export function Sub2ApiPage() {
               : monitor?.last_check_at
                 ? `上次巡检 ${formatRelativeTime(monitor.last_check_at)} · ${
                     monitor.last_result
-                      ? `上轮：异常 ${monitor.last_result.error_accounts} / 限流 ${monitor.last_result.rate_limited ?? 0} / 废弃 ${monitor.last_result.discarded} / 修复中 ${monitor.last_result.repairing} / 上传 ${monitor.last_result.uploaded ?? 0} / 补号 ${monitor.last_result.replenished}${monitor.last_result.available_count != null ? ` / 可用 ${monitor.last_result.available_count}` : ''}${monitor.last_result.stock_count != null ? ` / 主池库存 ${monitor.last_result.stock_count}` : ''}`
+                      ? `上轮：扫描 ${monitor.last_result.scanned ?? 0} / 异常 ${monitor.last_result.error_accounts} / 限流 ${monitor.last_result.rate_limited ?? 0} / 待辅证 ${monitor.last_result.ban_unconfirmed ?? 0} / 废弃 ${monitor.last_result.discarded} / 修复中 ${monitor.last_result.repairing} / 上传 ${monitor.last_result.uploaded ?? 0} / 补号 ${monitor.last_result.replenished}${monitor.last_result.available_count != null ? ` / 可用 ${monitor.last_result.available_count}` : ''}${monitor.last_result.stock_count != null ? ` / 主池库存 ${monitor.last_result.stock_count}` : ''}`
                       : '暂无结果'
                   }`
                 : '尚未巡检'}
@@ -457,32 +458,37 @@ export function Sub2ApiPage() {
           {(monitorLogs?.items ?? []).map((log) => (
             <details
               key={log.id}
-              className="rounded-md border p-3"
+              className="group rounded-lg border transition-colors open:bg-muted/30 hover:border-muted-foreground/30"
               open={log.status === 'running' || log.status === 'failed'}
             >
-              <summary className="flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-                <span className="font-medium">{formatDateTime(log.started_at)}</span>
-                <span className="text-xs text-muted-foreground">{log.source === 'timer' ? '定时' : '手动'}</span>
-                <MonitorLogStatusBadge status={log.status} />
-                {log.status === 'done' && (
-                  <span className="text-xs text-muted-foreground">
-                    异常 {log.summary.error_accounts ?? 0} · 限流 {log.summary.rate_limited ?? 0} · 废弃{' '}
-                    {log.summary.discarded ?? 0} · 修复 {log.summary.repairing ?? 0} · 补号{' '}
-                    {log.summary.replenished ?? 0}
-                    {durationSeconds(log) != null ? ` · 耗时 ${durationSeconds(log)}s` : ''}
-                  </span>
-                )}
-                {log.status === 'failed' && log.error && <span className="text-xs text-destructive">{log.error}</span>}
-              </summary>
-              {log.items.length > 0 ? (
-                <div className="mt-2 space-y-1.5">
-                  {log.items.map((item, index) => (
-                    <MonitorLogItemRow key={index} item={item} />
-                  ))}
+              <summary className="cursor-pointer select-none space-y-2 p-3 [&::-webkit-details-marker]:hidden">
+                <div className="flex flex-wrap items-center gap-2">
+                  <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-open:rotate-90" />
+                  <span className="text-sm font-semibold tabular-nums">{formatDateTime(log.started_at)}</span>
+                  <Badge variant="muted">{log.source === 'timer' ? '定时' : '手动'}</Badge>
+                  <MonitorLogStatusBadge status={log.status} />
+                  {durationSeconds(log) != null && (
+                    <span className="text-xs tabular-nums text-muted-foreground">{durationSeconds(log)}s</span>
+                  )}
                 </div>
-              ) : (
-                <div className="mt-2 text-xs text-muted-foreground">本轮无需处理的账号</div>
-              )}
+                {log.status === 'done' && <MonitorSummaryChips summary={log.summary} />}
+                {log.status === 'failed' && log.error && (
+                  <div className="rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive">{log.error}</div>
+                )}
+              </summary>
+              <div className="px-3 pb-3">
+                {log.items.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {log.items.map((item, index) => (
+                      <MonitorLogItemRow key={index} item={item} />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-md bg-muted/50 px-2.5 py-2 text-xs text-muted-foreground">
+                    本轮无需处理的账号
+                  </div>
+                )}
+              </div>
             </details>
           ))}
         </CardContent>
@@ -641,38 +647,86 @@ function ReplaceResultView({ result }: { result: Sub2ApiProxyReplaceResult }) {
   );
 }
 
-const MONITOR_ACTION_META: Record<string, { label: string; className: string }> = {
-  discarded: { label: '移入废弃池', className: 'text-destructive font-medium' },
-  repairing: { label: '自动修复中', className: 'text-amber-600' },
-  rate_limited_waiting: { label: '限流观察中', className: 'text-amber-600' },
-  ignored: { label: '未处理', className: 'text-muted-foreground' },
+const MONITOR_ACTION_META: Record<string, { label: string; variant: 'danger' | 'warning' | 'info' | 'success' | 'muted' }> = {
+  discarded: { label: '移入废弃池', variant: 'danger' },
+  ban_unconfirmed: { label: '待邮件辅证', variant: 'warning' },
+  rate_limited_waiting: { label: '限流观察', variant: 'warning' },
+  repairing: { label: '修复中', variant: 'info' },
+  uploaded: { label: '已上传', variant: 'success' },
+  upload_failed: { label: '上传失败', variant: 'danger' },
+  ignored: { label: '未处理', variant: 'muted' },
 };
 
 const MONITOR_REASON_LABELS: Record<string, string> = {
-  banned_401: '封禁/401',
+  banned_401: '封禁·邮件证实',
+  banned_pattern: '封禁关键词',
+  permanent_pattern: '永久封禁词',
   rate_limited_429: '限流/429',
   auto_repair: '临时错误',
   temp_error: '临时错误',
+  replenish: '补号上传',
 };
 
+/** 摘要指标：>0 时按语义着色，=0 灰色弱化，一眼扫出本轮干了什么 */
+function MonitorSummaryChips({ summary }: { summary: Sub2ApiMonitorLog['summary'] }) {
+  type Tone = 'neutral' | 'warn' | 'danger' | 'info' | 'success';
+  const chips: { label: string; value: number | null | undefined; tone: Tone }[] = [
+    { label: '扫描', value: summary.scanned, tone: 'neutral' },
+    { label: '异常', value: summary.error_accounts, tone: 'warn' },
+    { label: '限流', value: summary.rate_limited, tone: 'warn' },
+    { label: '待辅证', value: summary.ban_unconfirmed, tone: 'warn' },
+    { label: '废弃', value: summary.discarded, tone: 'danger' },
+    { label: '修复', value: summary.repairing, tone: 'info' },
+    { label: '上传', value: summary.uploaded, tone: 'success' },
+    { label: '补号', value: summary.replenished, tone: 'success' },
+    { label: '可用', value: summary.available_count, tone: 'neutral' },
+    { label: '库存', value: summary.stock_count, tone: 'neutral' },
+  ];
+  const toneClass = (tone: Tone, value: number) => {
+    if (tone === 'neutral' || value <= 0) return 'text-muted-foreground';
+    if (tone === 'warn') return 'text-amber-600';
+    if (tone === 'danger') return 'text-destructive';
+    if (tone === 'info') return 'text-blue-600';
+    return 'text-emerald-600';
+  };
+  return (
+    <div className="flex flex-wrap gap-x-3.5 gap-y-1 pl-6">
+      {chips
+        .filter((chip) => chip.value != null)
+        .map((chip) => (
+          <span key={chip.label} className="inline-flex items-baseline gap-1">
+            <span className="text-xs text-muted-foreground">{chip.label}</span>
+            <span className={cn('text-sm font-semibold tabular-nums', toneClass(chip.tone, chip.value ?? 0))}>
+              {chip.value}
+            </span>
+          </span>
+        ))}
+    </div>
+  );
+}
+
 function MonitorLogStatusBadge({ status }: { status: string }) {
-  if (status === 'running') return <span className="text-xs text-blue-600">进行中…</span>;
-  if (status === 'failed') return <span className="text-xs text-destructive font-medium">失败</span>;
-  return <span className="text-xs text-emerald-600">完成</span>;
+  if (status === 'running') return <Badge variant="info">进行中…</Badge>;
+  if (status === 'failed') return <Badge variant="danger">失败</Badge>;
+  return <Badge variant="success">完成</Badge>;
 }
 
 function MonitorLogItemRow({ item }: { item: Sub2ApiMonitorLogItem }) {
-  const meta = MONITOR_ACTION_META[item.action] ?? { label: item.action, className: '' };
+  const meta = MONITOR_ACTION_META[item.action] ?? { label: item.action, variant: 'muted' as const };
   return (
-    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
-      <span className={meta.className}>{meta.label}</span>
+    <div className="flex flex-wrap items-center gap-2 rounded-md bg-muted/40 px-2.5 py-1.5">
+      <Badge variant={meta.variant}>{meta.label}</Badge>
       <span className="font-mono text-xs">{item.email ?? `远端#${item.remote_id ?? '?'}`}</span>
       {item.reason && (
-        <span className="rounded bg-muted px-1.5 py-0.5 text-xs">
+        <span className="rounded bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground">
           {MONITOR_REASON_LABELS[item.reason] ?? item.reason}
         </span>
       )}
-      {item.detail && <span className="text-xs text-muted-foreground">{item.detail}</span>}
+      {item.detail && (
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={item.detail}>
+          {item.detail}
+        </span>
+      )}
     </div>
   );
 }
