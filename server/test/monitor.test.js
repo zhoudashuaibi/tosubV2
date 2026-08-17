@@ -18,17 +18,28 @@ function setup() {
   const db = openDatabase(dataDir, { logger });
   const crypto = createCrypto({ dataDir, secretKeyEnv: 'test-secret', logger });
   const pools = createPools(db, crypto);
-  return { dataDir, db, crypto, pools, submitted: [], uploads: [], remoteAccounts: [] };
+  return { dataDir, db, crypto, pools, submitted: [], uploads: [], schedulable: [], banChecks: [], banResults: [] };
 }
 
-function insertAccount(db, { email, pool = 'main', status = 'active', tokens = false, balance = null }) {
+function insertAccount(db, crypto, { email, pool = 'main', status = 'active', tokens = null, credentials = null, balance = null }) {
   const now = new Date().toISOString();
   const result = db
     .prepare(
-      `INSERT INTO accounts(email, pool, status, mail_status, tokens_enc, balance, imported_at, created_at, updated_at)
-       VALUES(?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO accounts(email, pool, status, mail_status, tokens_enc, credentials_enc, balance, imported_at, created_at, updated_at)
+       VALUES(?,?,?,?,?,?,?,?,?,?)`,
     )
-    .run(email, pool, status, 'ok', tokens ? 'enc-blob' : null, balance, now, now, now);
+    .run(
+      email,
+      pool,
+      status,
+      'ok',
+      tokens ? crypto.encryptJson(tokens, 'accounts.tokens_enc') : null,
+      credentials ? crypto.encryptJson(credentials, 'accounts.credentials_enc') : null,
+      balance,
+      now,
+      now,
+      now,
+    );
   return Number(result.lastInsertRowid);
 }
 
@@ -45,7 +56,7 @@ function insertRunningJob(db, accountId) {
   );
 }
 
-function remoteAccount({ id, email, status = 'active', rateLimitedAt = null, resetAt = null, name = null }) {
+function remoteAccount({ id, email, status = 'active', rateLimitedAt = null, resetAt = null, name = null, errorMessage = '401 unauthorized' }) {
   return {
     id,
     type: 'oauth',
@@ -54,11 +65,11 @@ function remoteAccount({ id, email, status = 'active', rateLimitedAt = null, res
     credentials: { email },
     rate_limited_at: rateLimitedAt,
     rate_limit_reset_at: resetAt,
-    error_message: status === 'error' ? '401 unauthorized' : null,
+    error_message: status === 'error' ? errorMessage : null,
   };
 }
 
-function buildMonitor({ threshold = 10, remoteAccounts = [], autoRepair = false } = {}) {
+function buildMonitor({ threshold = 10, remoteAccounts = [], autoRepair = false, bannedPatterns = ['401'], banMailCheck = null } = {}) {
   const client = {
     listAllOpenAiAccounts: async () => remoteAccounts,
     accountEmail: (account) => account?.credentials?.email || null,
@@ -71,7 +82,9 @@ function buildMonitor({ threshold = 10, remoteAccounts = [], autoRepair = false 
       return { rate_limited_at: account?.rate_limited_at ?? null, rate_limit_reset_at: account?.rate_limit_reset_at ?? null, limited_now: limitedNow };
     },
     accountErrorMessage: (account) => account?.error_message || '',
-    setSchedulable: async () => {},
+    setSchedulable: async (id, enabled) => {
+      ctx.schedulable.push({ id, enabled });
+    },
   };
   const getConfig = () => ({
     base_url: 'http://sub2api.test',
@@ -82,7 +95,7 @@ function buildMonitor({ threshold = 10, remoteAccounts = [], autoRepair = false 
       auto_repair: autoRepair,
       auto_replenish: true,
       reserve_threshold: threshold,
-      banned_patterns: ['401'],
+      banned_patterns: bannedPatterns,
       rate_limit_patterns: ['429', 'rate limit'],
     },
   });
@@ -99,7 +112,7 @@ function buildMonitor({ threshold = 10, remoteAccounts = [], autoRepair = false 
         return { created: ids.length, updated: 0, failed: [], updated_account_ids: [] };
       },
     },
-    banMailCheck: null,
+    banMailCheck,
     logger,
   });
 }
@@ -110,7 +123,7 @@ beforeEach(() => {
 
 test('补号计数：远端正常的主池号计入，达到阈值不补', async () => {
   const emails = ['a@test.local', 'b@test.local', 'c@test.local'];
-  for (const email of emails) insertAccount(ctx.db, { email });
+  for (const email of emails) insertAccount(ctx.db, ctx.crypto, { email });
   const monitor = buildMonitor({
     threshold: 3,
     remoteAccounts: emails.map((email, i) => remoteAccount({ id: i + 1, email })),
@@ -124,9 +137,9 @@ test('补号计数：远端正常的主池号计入，达到阈值不补', async
 });
 
 test('补号计数：限流中（429）的号不计入，缺口触发补号', async () => {
-  insertAccount(ctx.db, { email: 'ok@test.local' });
-  insertAccount(ctx.db, { email: 'limited@test.local' });
-  insertAccount(ctx.db, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'ok@test.local' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'limited@test.local' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
   const monitor = buildMonitor({
     threshold: 2,
     remoteAccounts: [
@@ -147,28 +160,134 @@ test('补号计数：限流中（429）的号不计入，缺口触发补号', as
   assert.equal(candidate.status, 'joining');
 });
 
-test('补号计数：401 error 号废弃后不计入，缺口触发补号', async () => {
-  insertAccount(ctx.db, { email: 'ok@test.local' });
-  insertAccount(ctx.db, { email: 'banned@test.local' });
-  insertAccount(ctx.db, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
+test('401 只代表会话过期：不废弃，修复关闭时保留主池观察', async () => {
+  insertAccount(ctx.db, ctx.crypto, { email: 'ok@test.local' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'expired@test.local' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
   const monitor = buildMonitor({
     threshold: 2,
     remoteAccounts: [
       remoteAccount({ id: 1, email: 'ok@test.local' }),
-      remoteAccount({ id: 2, email: 'banned@test.local', status: 'error' }),
+      remoteAccount({ id: 2, email: 'expired@test.local', status: 'error' }),
     ],
   });
 
   const view = await monitor.runCheck();
 
-  assert.equal(view.last_result.discarded, 1);
+  // 即使 banned_patterns 里残留 '401' 也会被剥离：不废弃、不判封
+  assert.equal(view.last_result.discarded, 0);
+  assert.equal(view.last_result.ban_unconfirmed, 0);
   assert.equal(view.last_result.available_count, 1);
   assert.equal(view.last_result.replenished, 1);
+  const account = ctx.db.prepare(`SELECT pool, status, banned FROM accounts WHERE email='expired@test.local'`).get();
+  assert.equal(account.pool, 'main');
+  assert.equal(account.banned, 0);
+});
+
+test('401 error + 自动修复：有 refresh_token 发刷新任务（失败由引擎转完整登录）', async () => {
+  insertAccount(ctx.db, ctx.crypto, { email: 'expired@test.local', tokens: { refresh_token: 'rt' } });
+  const monitor = buildMonitor({
+    autoRepair: true,
+    remoteAccounts: [remoteAccount({ id: 1, email: 'expired@test.local', status: 'error' })],
+  });
+
+  const view = await monitor.runCheck();
+
+  assert.equal(view.last_result.repairing, 1);
+  assert.equal(ctx.submitted.length, 1);
+  assert.equal(ctx.submitted[0].type, 'refresh');
+  const account = ctx.db.prepare(`SELECT status FROM accounts WHERE email='expired@test.local'`).get();
+  assert.equal(account.status, 'authorizing');
+});
+
+test('401 error + 自动修复：无 refresh_token 但有密码 → 直接发完整登录', async () => {
+  insertAccount(ctx.db, ctx.crypto, { email: 'expired@test.local', credentials: { password: 'pw' } });
+  const monitor = buildMonitor({
+    autoRepair: true,
+    remoteAccounts: [remoteAccount({ id: 1, email: 'expired@test.local', status: 'error' })],
+  });
+
+  const view = await monitor.runCheck();
+
+  assert.equal(view.last_result.repairing, 1);
+  assert.equal(ctx.submitted[0].type, 'login');
+});
+
+test('封禁关键词未获邮件辅证 → 不废弃，暂停远端保留观察', async () => {
+  insertAccount(ctx.db, ctx.crypto, { email: 'suspect@test.local' });
+  const monitor = buildMonitor({
+    bannedPatterns: ['banned'],
+    banMailCheck: {
+      check: async (id, { source }) => {
+        ctx.banChecks.push({ id, source });
+        return { confirmed: false, result: 'not_found' };
+      },
+    },
+    remoteAccounts: [remoteAccount({ id: 7, email: 'suspect@test.local', status: 'error', errorMessage: 'account is banned' })],
+  });
+
+  const view = await monitor.runCheck();
+
+  assert.equal(view.last_result.discarded, 0);
+  assert.equal(view.last_result.ban_unconfirmed, 1);
+  assert.equal(ctx.banChecks.length, 1);
+  assert.deepEqual(ctx.schedulable, [{ id: 7, enabled: false }]);
+  const account = ctx.db.prepare(`SELECT pool, banned, auto_repair_blocked FROM accounts WHERE email='suspect@test.local'`).get();
+  assert.equal(account.pool, 'main');
+  assert.equal(account.banned, 0);
+  assert.equal(account.auto_repair_blocked, 0);
+});
+
+test('封禁关键词 + 邮件辅证证实 → 移废弃池并阻断自动修复', async () => {
+  insertAccount(ctx.db, ctx.crypto, { email: 'banned@test.local' });
+  const monitor = buildMonitor({
+    bannedPatterns: ['deactivated'],
+    banMailCheck: {
+      check: async () => ({ confirmed: true, result: 'confirmed', reason: '邮件命中封禁关键词' }),
+    },
+    remoteAccounts: [remoteAccount({ id: 8, email: 'banned@test.local', status: 'error', errorMessage: 'account_deactivated' })],
+  });
+
+  const view = await monitor.runCheck();
+
+  assert.equal(view.last_result.discarded, 1);
+  assert.equal(view.last_result.ban_unconfirmed, 0);
+  const account = ctx.db.prepare(`SELECT pool, discard_reason, auto_repair_blocked FROM accounts WHERE email='banned@test.local'`).get();
+  assert.equal(account.pool, 'discard');
+  assert.equal(account.discard_reason, 'banned_401');
+  assert.equal(account.auto_repair_blocked, 1);
+});
+
+test('修复失败熔断：连续失败 max_repair_attempts 次移 repair_failed，转登录链路不重复计数', async () => {
+  const id = insertAccount(ctx.db, ctx.crypto, { email: 'flaky@test.local' });
+  const monitor = buildMonitor({}); // max_repair_attempts 默认 2
+  ctx.db.prepare(`UPDATE accounts SET last_auto_repair_at=? WHERE id=?`).run(new Date().toISOString(), id);
+
+  // refresh 失败但已转完整登录（followUpJobId）→ 本链路未结束，不计数
+  monitor.noteRepairOutcome({ id: 'job-1', account_id: id, type: 'refresh' }, { ok: false, followUpJobId: 'job-2' });
+  assert.equal(ctx.db.prepare(`SELECT repair_fail_count FROM accounts WHERE id=?`).get(id).repair_fail_count, 0);
+
+  // 派生登录也失败 → 计 1 次，仍在主池
+  monitor.noteRepairOutcome({ id: 'job-2', account_id: id, type: 'login' }, { ok: false });
+  assert.equal(ctx.db.prepare(`SELECT repair_fail_count, pool FROM accounts WHERE id=?`).get(id).repair_fail_count, 1);
+
+  // 第二轮修复失败 → 达到上限，移 repair_failed
+  monitor.noteRepairOutcome({ id: 'job-3', account_id: id, type: 'login' }, { ok: false });
+  const account = ctx.db.prepare(`SELECT pool, discard_reason, repair_fail_count FROM accounts WHERE id=?`).get(id);
+  assert.equal(account.pool, 'discard');
+  assert.equal(account.discard_reason, 'repair_failed');
+  assert.equal(account.repair_fail_count, 2);
+
+  // 成功路径：清零
+  const id2 = insertAccount(ctx.db, ctx.crypto, { email: 'healed@test.local' });
+  ctx.db.prepare(`UPDATE accounts SET last_auto_repair_at=?, repair_fail_count=1 WHERE id=?`).run(new Date().toISOString(), id2);
+  monitor.noteRepairOutcome({ id: 'job-4', account_id: id2, type: 'login' }, { ok: true });
+  assert.equal(ctx.db.prepare(`SELECT repair_fail_count FROM accounts WHERE id=?`).get(id2).repair_fail_count, 0);
 });
 
 test('补号计数：他人上传的号（本地无记录）不计入', async () => {
-  insertAccount(ctx.db, { email: 'mine@test.local' });
-  insertAccount(ctx.db, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'mine@test.local' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
   const monitor = buildMonitor({
     threshold: 2,
     remoteAccounts: [
@@ -184,10 +303,10 @@ test('补号计数：他人上传的号（本地无记录）不计入', async ()
 });
 
 test('补号计数：已废弃号远端未删不计入', async () => {
-  insertAccount(ctx.db, { email: 'ok@test.local' });
-  const discardedId = insertAccount(ctx.db, { email: 'gone@test.local' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'ok@test.local' });
+  const discardedId = insertAccount(ctx.db, ctx.crypto, { email: 'gone@test.local' });
   ctx.pools.moveToDiscard(discardedId, 'rate_limited_429', '限流至下个月');
-  insertAccount(ctx.db, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
   const monitor = buildMonitor({
     threshold: 2,
     remoteAccounts: [
@@ -204,11 +323,11 @@ test('补号计数：已废弃号远端未删不计入', async () => {
 });
 
 test('补号计数：reserve 池在途 joining（有活跃任务）计入可用与库存，按缺口补足不超发', async () => {
-  insertAccount(ctx.db, { email: 'ok@test.local' });
-  const joiningId = insertAccount(ctx.db, { email: 'inflight@test.local', pool: 'reserve', status: 'joining' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'ok@test.local' });
+  const joiningId = insertAccount(ctx.db, ctx.crypto, { email: 'inflight@test.local', pool: 'reserve', status: 'joining' });
   insertRunningJob(ctx.db, joiningId);
-  insertAccount(ctx.db, { email: 'c1@test.local', pool: 'reserve', status: 'mail_ok' });
-  insertAccount(ctx.db, { email: 'c2@test.local', pool: 'reserve', status: 'mail_ok' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'c1@test.local', pool: 'reserve', status: 'mail_ok' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'c2@test.local', pool: 'reserve', status: 'mail_ok' });
   const monitor = buildMonitor({
     threshold: 2,
     remoteAccounts: [remoteAccount({ id: 1, email: 'ok@test.local' })],
@@ -223,9 +342,9 @@ test('补号计数：reserve 池在途 joining（有活跃任务）计入可用�
 });
 
 test('补号计数：僵尸 joining（无活跃任务）不计入可用', async () => {
-  insertAccount(ctx.db, { email: 'ok@test.local' });
-  insertAccount(ctx.db, { email: 'zombie@test.local', pool: 'reserve', status: 'joining' });
-  insertAccount(ctx.db, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'ok@test.local' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'zombie@test.local', pool: 'reserve', status: 'joining' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
   const monitor = buildMonitor({
     threshold: 2,
     remoteAccounts: [remoteAccount({ id: 1, email: 'ok@test.local' })],
@@ -242,7 +361,7 @@ test('补号计数：僵尸 joining（无活跃任务）不计入可用', async 
 
 test('补号并发：单轮最多补 3 个', async () => {
   for (const email of ['c1@test.local', 'c2@test.local', 'c3@test.local', 'c4@test.local', 'c5@test.local']) {
-    insertAccount(ctx.db, { email, pool: 'reserve', status: 'mail_ok' });
+    insertAccount(ctx.db, ctx.crypto, { email, pool: 'reserve', status: 'mail_ok' });
   }
   const monitor = buildMonitor({ threshold: 6, remoteAccounts: [] });
 
@@ -254,13 +373,13 @@ test('补号并发：单轮最多补 3 个', async () => {
 });
 
 test('级联补号：库存充足（补完缺口仍不低于保底）时备用池不动；余额小/未知余额的先上', async () => {
-  insertAccount(ctx.db, { email: 'ok@test.local' });
-  const unknownId = insertAccount(ctx.db, { email: 'unknown@test.local', tokens: true });
-  const smallId = insertAccount(ctx.db, { email: 'small@test.local', tokens: true, balance: 3 });
+  insertAccount(ctx.db, ctx.crypto, { email: 'ok@test.local' });
+  const unknownId = insertAccount(ctx.db, ctx.crypto, { email: 'unknown@test.local', tokens: { refresh_token: "rt" } });
+  const smallId = insertAccount(ctx.db, ctx.crypto, { email: 'small@test.local', tokens: { refresh_token: "rt" }, balance: 3 });
   for (const email of ['big@test.local', 's4@test.local', 's5@test.local']) {
-    insertAccount(ctx.db, { email, tokens: true, balance: 20 });
+    insertAccount(ctx.db, ctx.crypto, { email, tokens: { refresh_token: "rt" }, balance: 20 });
   }
-  insertAccount(ctx.db, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
   const monitor = buildMonitor({
     threshold: 3,
     remoteAccounts: [remoteAccount({ id: 1, email: 'ok@test.local' })],
@@ -280,10 +399,10 @@ test('级联补号：库存充足（补完缺口仍不低于保底）时备用�
 });
 
 test('级联补号：库存补不满缺口时，上传全部库存并从备用池登录补库存', async () => {
-  insertAccount(ctx.db, { email: 'ok@test.local' });
-  insertAccount(ctx.db, { email: 's1@test.local', tokens: true });
-  insertAccount(ctx.db, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
-  insertAccount(ctx.db, { email: 'cand2@test.local', pool: 'reserve', status: 'mail_ok' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'ok@test.local' });
+  insertAccount(ctx.db, ctx.crypto, { email: 's1@test.local', tokens: { refresh_token: "rt" } });
+  insertAccount(ctx.db, ctx.crypto, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'cand2@test.local', pool: 'reserve', status: 'mail_ok' });
   const monitor = buildMonitor({
     threshold: 4,
     remoteAccounts: [remoteAccount({ id: 1, email: 'ok@test.local' })],
@@ -302,8 +421,8 @@ test('级联补号：库存补不满缺口时，上传全部库存并从备用�
 
 test('级联补号：sub2api 可用够（无缺口），主池库存低于保底仍从备用池登录补库存', async () => {
   const emails = ['a@test.local', 'b@test.local', 'c@test.local'];
-  for (const email of emails) insertAccount(ctx.db, { email });
-  insertAccount(ctx.db, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
+  for (const email of emails) insertAccount(ctx.db, ctx.crypto, { email });
+  insertAccount(ctx.db, ctx.crypto, { email: 'cand@test.local', pool: 'reserve', status: 'mail_ok' });
   const monitor = buildMonitor({
     threshold: 3,
     remoteAccounts: emails.map((email, i) => remoteAccount({ id: i + 1, email })),
@@ -321,10 +440,10 @@ test('级联补号：sub2api 可用够（无缺口），主池库存低于保底
 });
 
 test('级联补号：远端已存在的主池号不重复上传', async () => {
-  insertAccount(ctx.db, { email: 'ok@test.local' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'ok@test.local' });
   // 远端已存在（短期限流中，保留主池）：不进上传候选
-  insertAccount(ctx.db, { email: 'dupe@test.local', tokens: true });
-  const freshId = insertAccount(ctx.db, { email: 'fresh@test.local', tokens: true });
+  insertAccount(ctx.db, ctx.crypto, { email: 'dupe@test.local', tokens: { refresh_token: "rt" } });
+  const freshId = insertAccount(ctx.db, ctx.crypto, { email: 'fresh@test.local', tokens: { refresh_token: "rt" } });
   const monitor = buildMonitor({
     threshold: 2,
     remoteAccounts: [

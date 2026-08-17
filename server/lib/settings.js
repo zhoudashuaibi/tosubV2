@@ -35,7 +35,8 @@ export const DEFAULT_SETTINGS = {
       auto_replenish: false,
       reserve_threshold: 10,
       pause_on_discard: true,
-      banned_patterns: ['account_deactivated', 'deactivated', 'suspended', 'banned', 'permanently deleted', '401'],
+      // 401 只代表会话过期（走自动修复：refresh 失败转完整登录），不得作为封禁特征
+      banned_patterns: ['account_deactivated', 'deactivated', 'suspended', 'banned', 'permanently deleted'],
       rate_limit_patterns: ['429', 'rate limit', 'too many requests'],
     },
   },

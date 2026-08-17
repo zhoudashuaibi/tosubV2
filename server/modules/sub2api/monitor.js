@@ -5,8 +5,10 @@ import { sanitizeText } from '../../lib/sanitize.js';
  *  - 只监控 OAuth 授权号（本系统上传的 free 号，type=oauth）；API Key 号（plus/pro/team 等）完全忽略
  *  - 拉全量监控分组账号 → error 账号分类（banned/rate_limit/临时错误）
  *  - OAuth 号限流不写 status=error，用 rate_limited_at 判定：重置时间超过阈值 → 移废弃池，否则保留观察
- *  - banned_401 / rate_limited_429 → 移废弃池（可选 pause 远端）
- *  - 临时错误 → 自动重登修复（冷却 5 分钟，失败 N 次移 repair_failed）
+ *  - 401/会话过期 → 自动修复：有 refresh_token 先刷新（失败自动转完整登录），没有直接发完整登录；
+ *    连续失败 max_repair_attempts 次才移 repair_failed
+ *  - 封禁关键词（deactivated/banned/suspended 等）→ 必须邮箱辅证证实才移废弃池；
+ *    未证实只暂停远端调度保留观察，绝不凭远端一句错误信息直接废弃
  *  - 自动补号（同一保底阈值双重约束）：sub2api 可用数（本地主池 × 远端非 error/非限流 + 在途 joining）
  *    低于阈值 → 先从主池库存（未上传 sub2api 的 active 号，余额小优先）直接上传补缺口；
  *    主池库存（扣除本轮上传 + 在途登录）低于同一阈值 → 从备用池登录补入主池（每轮最多 3 个），下轮按需上传
@@ -57,11 +59,16 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
       enabled: Boolean(config.enabled),
       running: state.running,
       interval_minutes: config.interval_minutes ?? 5,
+      cooldown_minutes: config.cooldown_minutes ?? 5,
       auto_repair: config.auto_repair !== false,
       max_repair_attempts: config.max_repair_attempts ?? 2,
       auto_replenish: Boolean(config.auto_replenish),
       reserve_threshold: config.reserve_threshold ?? 10,
       rate_limit_reset_threshold_hours: config.rate_limit_reset_threshold_hours ?? 12,
+      // 设置页回显用：不回显会导致保存时把这些字段覆盖成空
+      pause_on_discard: config.pause_on_discard !== false,
+      banned_patterns: config.banned_patterns || [],
+      rate_limit_patterns: config.rate_limit_patterns || [],
       last_check_at: state.lastCheckAt,
       next_check_at: state.nextCheckAt,
       last_error: state.lastError,
@@ -151,12 +158,16 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
     state.running = true;
     const logId = startLog(source);
     const items = [];
-    const result = { error_accounts: 0, rate_limited: 0, discarded: 0, repairing: 0, uploaded: 0, replenished: 0 };
+    const result = { error_accounts: 0, rate_limited: 0, discarded: 0, ban_unconfirmed: 0, repairing: 0, uploaded: 0, replenished: 0 };
     let accounts = null;
     try {
       const monitor = monitorConfig();
       const groupIds = Array.isArray(config.group_ids) ? config.group_ids : [];
-      const bannedPatterns = (monitor.banned_patterns || []).filter(Boolean).map((p) => new RegExp(p, 'i'));
+      // 401 只代表会话过期（自动修复：refresh 失败转完整登录），旧配置残留的裸 401 模式在此剔除
+      const bannedPatterns = (monitor.banned_patterns || [])
+        .filter(Boolean)
+        .filter((p) => String(p).trim().toLowerCase() !== '401')
+        .map((p) => new RegExp(p, 'i'));
       const rateLimitPatterns = (monitor.rate_limit_patterns || []).filter(Boolean).map((p) => new RegExp(p, 'i'));
       const resetThresholdMs =
         Math.max(0, Number(monitor.rate_limit_reset_threshold_hours ?? 12)) * 3600_000;
@@ -213,28 +224,43 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
         if (String(remote.status || '') !== 'error') continue;
         const errorMessage = client.accountErrorMessage(remote) || 'unknown error';
 
-        if (bannedPatterns.some((re) => re.test(errorMessage))) {
-          await discardLocal(local, 'banned_401', errorMessage, remote, monitor);
-          corroborateBan(local, 'monitor_banned_pattern');
-          result.discarded += 1;
-          items.push({ email, remote_id: remote?.id, action: 'discarded', reason: 'banned_401', detail: errorMessage });
+        const bannedHit = bannedPatterns.some((re) => re.test(errorMessage));
+        const permanentHit = PERMANENT_PATTERN.test(errorMessage);
+        if (bannedHit || permanentHit) {
+          // 封禁必须叠加邮箱辅证：未证实前不废弃，只暂停远端调度保留观察
+          const source = bannedHit ? 'monitor_banned_pattern' : 'monitor_permanent_pattern';
+          const verdict = await confirmBanByMail(local, source);
+          if (verdict.confirmed) {
+            db.prepare('UPDATE accounts SET auto_repair_blocked=1, updated_at=? WHERE id=?').run(
+              new Date().toISOString(),
+              local.id,
+            );
+            await discardLocal(local, 'banned_401', errorMessage, remote, monitor);
+            result.discarded += 1;
+            items.push({
+              email,
+              remote_id: remote?.id,
+              action: 'discarded',
+              reason: 'banned_401',
+              detail: `${errorMessage}（邮件辅证证实：${verdict.reason || '封禁邮件命中'}）`,
+            });
+          } else {
+            await pauseRemote(remote, monitor, '疑似封禁待辅证');
+            result.ban_unconfirmed += 1;
+            items.push({
+              email,
+              remote_id: remote?.id,
+              action: 'ban_unconfirmed',
+              reason: bannedHit ? 'banned_pattern' : 'permanent_pattern',
+              detail: `${errorMessage}（邮件辅证 ${verdict.result}，不废弃，保留观察）`,
+            });
+          }
           continue;
         }
         if (rateLimitPatterns.some((re) => re.test(errorMessage))) {
           await discardLocal(local, 'rate_limited_429', errorMessage, remote, monitor);
           result.discarded += 1;
           items.push({ email, remote_id: remote?.id, action: 'discarded', reason: 'rate_limited_429', detail: errorMessage });
-          continue;
-        }
-        if (PERMANENT_PATTERN.test(errorMessage)) {
-          db.prepare('UPDATE accounts SET auto_repair_blocked=1, updated_at=? WHERE id=?').run(
-            new Date().toISOString(),
-            local.id,
-          );
-          await discardLocal(local, 'banned_401', errorMessage, remote, monitor);
-          corroborateBan(local, 'monitor_permanent_pattern');
-          result.discarded += 1;
-          items.push({ email, remote_id: remote?.id, action: 'discarded', reason: 'banned_401', detail: errorMessage });
           continue;
         }
 
@@ -288,12 +314,31 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
     }
   }
 
-  /** 封禁废弃后的邮箱辅证：拉封禁邮件比对（异步，失败只记事件）。 */
-  function corroborateBan(local, source) {
-    Promise.resolve(banMailCheck?.check(local.id, { source })).catch(() => {});
+  /** 封禁邮件辅证：证实才 confirmed=true；无检查器/缺凭据/出错一律视为未证实，绝不据此废弃。 */
+  async function confirmBanByMail(local, source) {
+    if (!banMailCheck?.check) return { confirmed: false, result: 'no_checker' };
+    try {
+      return await banMailCheck.check(local.id, { source });
+    } catch (error) {
+      logger.warn({ accountId: local.id, err: error.message }, 'ban mail confirm failed');
+      return { confirmed: false, result: 'error' };
+    }
   }
 
-  /** 自动修复资格：无活跃任务、未封禁、不在冷却期、修复失败次数未达上限。 */
+  async function pauseRemote(remote, monitor, detail) {
+    if (monitor.pause_on_discard === false || !Number.isInteger(Number(remote?.id))) return;
+    try {
+      await client.setSchedulable(Number(remote.id), false);
+    } catch (error) {
+      logger.warn({ remoteId: remote?.id, err: error.message }, `pause remote failed: ${detail}`);
+    }
+  }
+
+  /**
+   * 自动修复资格：无活跃任务、未封禁、不在冷却期、修复失败次数未达上限。
+   * 修复方式：有 refresh_token 先刷新（401 失败由引擎自动转完整登录）；
+   * 没有 refresh_token 但凭据支持完整登录（密码/Outlook 取件/邮箱 API）→ 直接发完整登录。
+   */
   function tryAutoRepair(local, monitor) {
     if (local.auto_repair_blocked) return false;
     if (local.pool !== 'main') return false;
@@ -313,16 +358,61 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
       return false;
     }
     const tokens = local.tokens_enc ? crypto.tryDecryptJson(local.tokens_enc, 'accounts.tokens_enc') : null;
-    if (!tokens?.refresh_token) return false;
+    const credentials = local.credentials_enc
+      ? crypto.tryDecryptJson(local.credentials_enc, 'accounts.credentials_enc')
+      : null;
+    let repairType = null;
+    if (tokens?.refresh_token) repairType = 'refresh';
+    else if (credentials?.password || credentials?.outlook?.refresh_token || credentials?.mail_api_url) repairType = 'login';
+    if (!repairType) return false;
 
     const now = new Date().toISOString();
     const cas = db
       .prepare(`UPDATE accounts SET status='authorizing', last_auto_repair_at=?, updated_at=? WHERE id=? AND pool='main' AND status IN ('active','needs_reauth')`)
       .run(now, now, local.id);
     if (cas.changes === 0) return false;
-    engine.submitJob({ accountId: local.id, type: 'refresh', note: 'sub2api 自动修复' });
-    pools.recordEvent(local.id, 'auto_repair_started', { source: 'monitor' });
+    engine.submitJob({ accountId: local.id, type: repairType, note: 'sub2api 自动修复' });
+    pools.recordEvent(local.id, 'auto_repair_started', { source: 'monitor', type: repairType });
     return true;
+  }
+
+  /**
+   * 自动修复任务终态回写（由引擎 onLoginFinished 钩子调用）：
+   *  - 成功 → repair_fail_count 清零
+   *  - 失败 → 计数 +1，达到 max_repair_attempts 移 repair_failed
+   *  - refresh 失败已自动转完整登录的（followUpJobId）不计数，等派生登录任务的终态
+   */
+  function noteRepairOutcome(job, { ok, followUpJobId = null } = {}) {
+    try {
+      if (!job?.account_id || !['refresh', 'login'].includes(job.type)) return;
+      const row = db
+        .prepare(`SELECT pool, last_auto_repair_at, repair_fail_count FROM accounts WHERE id=?`)
+        .get(job.account_id);
+      if (!row || row.pool !== 'main' || !row.last_auto_repair_at) return;
+      // 只统计自动修复链路（30 分钟内发起过修复）；手动授权不受影响
+      if (Date.now() - Date.parse(row.last_auto_repair_at) > 30 * 60_000) return;
+      const now = new Date().toISOString();
+      if (ok) {
+        if (row.repair_fail_count > 0) {
+          db.prepare('UPDATE accounts SET repair_fail_count=0, updated_at=? WHERE id=?').run(now, job.account_id);
+        }
+        return;
+      }
+      if (followUpJobId) return; // 已转完整登录，本链路未结束
+      const maxAttempts = Number(monitorConfig().max_repair_attempts) || 2;
+      const count = (row.repair_fail_count || 0) + 1;
+      db.prepare('UPDATE accounts SET repair_fail_count=?, updated_at=? WHERE id=?').run(count, now, job.account_id);
+      pools.recordEvent(job.account_id, 'repair_failed_attempt', { count, job_id: job.id });
+      if (count >= maxAttempts) {
+        try {
+          pools.moveToDiscard(job.account_id, 'repair_failed', `自动修复连续失败 ${count} 次`);
+        } catch (error) {
+          logger.warn({ accountId: job.account_id, err: error.message }, 'repair_failed discard skipped');
+        }
+      }
+    } catch (error) {
+      logger.warn({ jobId: job?.id, err: error.message }, 'note repair outcome failed');
+    }
   }
 
   /**
@@ -485,7 +575,7 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
     return true;
   }
 
-  return { startIfEnabled, stop, view, runCheck, recentLogs, pushRepairedCredentials, state };
+  return { startIfEnabled, stop, view, runCheck, recentLogs, pushRepairedCredentials, noteRepairOutcome, state };
 }
 
 function safeParseSummary(text) {

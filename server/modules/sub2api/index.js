@@ -45,17 +45,29 @@ export function createSub2apiModule({ engine, logger }) {
 
     const replaceProxies = createProxyReplacer({ client, logger });
 
-    // 引擎 hook：refresh 任务成功（tokens 回写）→ 推送新凭据到远端（监控自动修复场景）
+    // 引擎 hook：修复链路产物回传远端（refresh 成功，或 refresh 失败自动转的完整登录成功）
     const previousHandler = engine.hooks.onTokensSaved;
     engine.hooks.onTokensSaved = async (job, runtime, tokens) => {
       await previousHandler?.(job, runtime, tokens);
-      if (job.type === 'refresh' && job.account_id) {
+      const isRepairChain = job.type === 'refresh' || (job.type === 'login' && job.resume_job_id);
+      if (isRepairChain && job.account_id) {
         try {
           await monitor.pushRepairedCredentials(job.account_id);
         } catch (error) {
           logger.warn({ accountId: job.account_id, err: error.message }, 'push repaired credentials failed');
         }
       }
+    };
+
+    // 引擎 hook：自动修复任务终态 → 成功清零 / 失败计数熔断（挂在 accounts 模块池流转回调之后）
+    const previousLoginFinished = engine.hooks.onLoginFinished;
+    engine.hooks.onLoginFinished = (job, account, result) => {
+      try {
+        previousLoginFinished?.(job, account, result);
+      } catch (error) {
+        logger.warn({ jobId: job?.id, err: error.message }, 'onLoginFinished handler failed');
+      }
+      monitor.noteRepairOutcome(job, result || {});
     };
 
     function configView() {
