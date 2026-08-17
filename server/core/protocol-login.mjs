@@ -19,6 +19,8 @@ const DEFAULT_OUT = "tmp/chatgpt-protocol-session.json";
 const DEFAULT_SUB2API_OUT = "tmp/sub2api-import-oauth.json";
 const DEFAULT_TOTP_RESULT = "tmp/chatgpt-totp-setup.json";
 const DEFAULT_TIMEOUT_MS = 30_000;
+// OAuth authorization code 生命周期仅数分钟：超过此时效的 callback_ready 恢复兑换注定 400
+const OAUTH_CODE_MAX_AGE_MS = 10 * 60_000;
 
 // ---------------------------------------------------------------------------
 // v2 --json-events 模式（docs/v2/03-核心协议复用.md §8）
@@ -556,148 +558,161 @@ async function run() {
     }
     if (checkpoint && args.webOnly) checkpoint = null;
 
-    if (checkpoint && !args.webOnly) {
-      email = checkpoint.email || email;
-      client = new ProtocolClient({ verbose: args.verbose, jar: CookieJar.fromJSON(checkpoint.cookies), transport });
-      const saveCheckpoint = createCheckpointWriter(checkpointPath, {
-        client,
-        email,
-        chatgptBase,
-        authBase,
-      });
-      console.log(`[resume] Continue saved login flow from ${checkpoint.stage}.`);
-      try {
-        codex = await resumeCodexOauth(client, { ...codexOptions, saveCheckpoint }, checkpoint);
-        emitEvent("resume_used", { stage: checkpoint.stage });
-        web = checkpoint.web || null;
-      } catch (error) {
-        if (isSecurityCheckRequiredError(error)) throw error;
-        if (!isExpiredCheckpointError(error)) throw error;
-        console.log("[auth-expired] Saved login state expired; restarting email login.");
-        await removeProtocolCheckpoint(checkpointPath);
-        checkpoint = null;
-          client = null;
-          codex = null;
-          await transport.prepareProxy(proxyTemplate, `${chatgptBase}/`);
-        }
-    }
-
     let freshLoginRestartCount = 0;
-    while (!checkpoint && !codex) {
-      client = new ProtocolClient({ verbose: args.verbose, transport });
-      email = email || (await askInput(rl, "Email: ", "email"));
-      if (!email) throw new Error("Email is required");
-
-      console.log("[1/5] Start ChatGPT web login");
-      emitStageEvent("web_login");
-      web = await loginChatgptWeb(client, {
-        chatgptBase,
-        authBase,
-        email,
-        rl,
-        password: process.env.CHATGPT_LOGIN_PASSWORD || "",
-        totpSecret: process.env.CHATGPT_TOTP_SECRET || "",
-      });
-      console.log(
-        client.jar.has("__Secure-next-auth.session-token")
-          ? "[ok] ChatGPT web session cookie received"
-          : "[warn] ChatGPT session cookie not found; continue with auth cookies",
-      );
-
-      const saveCheckpoint = createCheckpointWriter(checkpointPath, {
-        client,
-        email,
-        chatgptBase,
-        authBase,
-        web,
-      });
-      await saveCheckpoint("email_verified", {});
-      console.log("[checkpoint] Saved verified email login state.");
-
-      if (!args.webOnly) {
-        console.log("[2/5] Start Codex OAuth flow");
-        emitStageEvent("oauth");
+    let finalizeRestartCount = 0;
+    flowLoop: while (true) {
+      if (checkpoint && !args.webOnly) {
+        email = checkpoint.email || email;
+        client = new ProtocolClient({ verbose: args.verbose, jar: CookieJar.fromJSON(checkpoint.cookies), transport });
+        const saveCheckpoint = createCheckpointWriter(checkpointPath, {
+          client,
+          email,
+          chatgptBase,
+          authBase,
+        });
+        console.log(`[resume] Continue saved login flow from ${checkpoint.stage}.`);
         try {
-          codex = await runCodexOauth(client, { ...codexOptions, saveCheckpoint });
+          codex = await resumeCodexOauth(client, { ...codexOptions, saveCheckpoint }, checkpoint);
+          emitEvent("resume_used", { stage: checkpoint.stage });
+          web = checkpoint.web || null;
         } catch (error) {
           if (isSecurityCheckRequiredError(error)) throw error;
           if (!isExpiredCheckpointError(error)) throw error;
+          console.log("[auth-expired] Saved login state expired; restarting email login.");
           await removeProtocolCheckpoint(checkpointPath);
-          if (freshLoginRestartCount >= 1) throw error;
-          freshLoginRestartCount += 1;
-          console.log("[auth-expired] Newly verified login state was rejected; restarting email login once.");
+          checkpoint = null;
           client = null;
-          web = null;
           codex = null;
           await transport.prepareProxy(proxyTemplate, `${chatgptBase}/`);
-          continue;
         }
       }
-      break;
-    }
 
-    if (outputMode !== "sub2api") {
-      await writeJsonAtomic(outPath, {
-        generated_at: new Date().toISOString(),
-        chatgpt_base: chatgptBase,
-        auth_base: authBase,
-        warning: "This file contains login cookies and OAuth data. Do not share it.",
-        cookies: client.jar.toJSON(),
-        web,
-        codex,
-      });
-      console.log(`[ok] Saved session data: ${outPath}`);
-    }
+      while (!checkpoint && !codex) {
+        client = new ProtocolClient({ verbose: args.verbose, transport });
+        email = email || (await askInput(rl, "Email: ", "email"));
+        if (!email) throw new Error("Email is required");
 
-    if (codex?.callbackUrl) {
-      console.log("[ok] Codex callback URL:");
-      console.log(codex.callbackUrl);
-    }
-    if (codex?.callbackUrl && codex?.codeVerifier && !args.noSub2apiExport && outputMode !== "session") {
-      console.log("[6/6] Convert OAuth callback to sub2api import");
-      emitStageEvent("finalizing");
-      let sub2apiExport;
-      try {
-        sub2apiExport = await buildSub2apiOauthExport({
+        console.log("[1/5] Start ChatGPT web login");
+        emitStageEvent("web_login");
+        web = await loginChatgptWeb(client, {
+          chatgptBase,
           authBase,
-          callbackUrl: codex.callbackUrl,
-          codeVerifier: codex.codeVerifier,
-          clientId: args.codexClientId || DEFAULT_CODEX_CLIENT_ID,
-          redirectUri: args.codexRedirectUri || DEFAULT_CODEX_REDIRECT_URI,
-          accountName: args.sub2apiName,
-          concurrency: args.concurrency,
-          priority: args.priority,
-          rateMultiplier: args.rateMultiplier,
-          transport,
-          cookie: client.jar.headerFor(authBase),
+          email,
+          rl,
+          password: process.env.CHATGPT_LOGIN_PASSWORD || "",
+          totpSecret: process.env.CHATGPT_TOTP_SECRET || "",
         });
-      } catch (error) {
-        if (isExpiredCheckpointError(error)) {
-          console.log("[auth-expired] Saved OAuth code is no longer exchangeable; removing checkpoint before failing.");
-          await removeProtocolCheckpoint(checkpointPath);
+        console.log(
+          client.jar.has("__Secure-next-auth.session-token")
+            ? "[ok] ChatGPT web session cookie received"
+            : "[warn] ChatGPT session cookie not found; continue with auth cookies",
+        );
+
+        const saveCheckpoint = createCheckpointWriter(checkpointPath, {
+          client,
+          email,
+          chatgptBase,
+          authBase,
+          web,
+        });
+        await saveCheckpoint("email_verified", {});
+        console.log("[checkpoint] Saved verified email login state.");
+
+        if (!args.webOnly) {
+          console.log("[2/5] Start Codex OAuth flow");
+          emitStageEvent("oauth");
+          try {
+            codex = await runCodexOauth(client, { ...codexOptions, saveCheckpoint });
+          } catch (error) {
+            if (isSecurityCheckRequiredError(error)) throw error;
+            if (!isExpiredCheckpointError(error)) throw error;
+            await removeProtocolCheckpoint(checkpointPath);
+            if (freshLoginRestartCount >= 1) throw error;
+            freshLoginRestartCount += 1;
+            console.log("[auth-expired] Newly verified login state was rejected; restarting email login once.");
+            client = null;
+            web = null;
+            codex = null;
+            await transport.prepareProxy(proxyTemplate, `${chatgptBase}/`);
+            continue;
+          }
         }
-        throw error;
+        break;
       }
-      await writeJsonAtomic(sub2apiOutPath, sub2apiExport.data);
-      await removeProtocolCheckpoint(checkpointPath);
-      console.log(`[ok] Saved sub2api import: ${sub2apiOutPath}`);
-      console.log(`[ok] Account: ${sub2apiExport.account.name}`);
-      console.log(`[ok] Email: ${sub2apiExport.account.credentials.email || "<unknown>"}`);
-      console.log(`[ok] chatgpt_account_id: ${mask(sub2apiExport.account.credentials.chatgpt_account_id)}`);
-      console.log(`[ok] chatgpt_user_id: ${mask(sub2apiExport.account.extra.chatgpt_user_id)}`);
-      console.log("[note] sub2api import JSON contains access_token, refresh_token and id_token. Do not share it.");
-      emitEvent("result_saved", {
-        path: sub2apiOutPath,
-        account: {
-          email: sub2apiExport.account.credentials.email || "",
-          name: sub2apiExport.account.name,
-          chatgpt_account_id: sub2apiExport.account.credentials.chatgpt_account_id || "",
-        },
-      });
-    } else if (outputMode === "sub2api") {
-      throw new Error("Cannot output only sub2api import without Codex OAuth. Remove --web-only and --no-sub2api-export.");
-    } else if (args.webOnly) {
-      await removeProtocolCheckpoint(checkpointPath);
+
+      if (outputMode !== "sub2api") {
+        await writeJsonAtomic(outPath, {
+          generated_at: new Date().toISOString(),
+          chatgpt_base: chatgptBase,
+          auth_base: authBase,
+          warning: "This file contains login cookies and OAuth data. Do not share it.",
+          cookies: client.jar.toJSON(),
+          web,
+          codex,
+        });
+        console.log(`[ok] Saved session data: ${outPath}`);
+      }
+
+      if (codex?.callbackUrl) {
+        console.log("[ok] Codex callback URL:");
+        console.log(codex.callbackUrl);
+      }
+      if (codex?.callbackUrl && codex?.codeVerifier && !args.noSub2apiExport && outputMode !== "session") {
+        console.log("[6/6] Convert OAuth callback to sub2api import");
+        emitStageEvent("finalizing");
+        let sub2apiExport;
+        try {
+          sub2apiExport = await buildSub2apiOauthExport({
+            authBase,
+            callbackUrl: codex.callbackUrl,
+            codeVerifier: codex.codeVerifier,
+            clientId: args.codexClientId || DEFAULT_CODEX_CLIENT_ID,
+            redirectUri: args.codexRedirectUri || DEFAULT_CODEX_REDIRECT_URI,
+            accountName: args.sub2apiName,
+            concurrency: args.concurrency,
+            priority: args.priority,
+            rateMultiplier: args.rateMultiplier,
+            transport,
+            cookie: client.jar.headerFor(authBase),
+          });
+        } catch (error) {
+          if (isExpiredCheckpointError(error)) {
+            await removeProtocolCheckpoint(checkpointPath);
+            if (finalizeRestartCount < 1) {
+              finalizeRestartCount += 1;
+              console.log("[auth-expired] Saved OAuth code is no longer exchangeable; restarting a fresh email login.");
+              checkpoint = null;
+              client = null;
+              web = null;
+              codex = null;
+              await transport.prepareProxy(proxyTemplate, `${chatgptBase}/`);
+              continue flowLoop;
+            }
+          }
+          throw error;
+        }
+        await writeJsonAtomic(sub2apiOutPath, sub2apiExport.data);
+        await removeProtocolCheckpoint(checkpointPath);
+        console.log(`[ok] Saved sub2api import: ${sub2apiOutPath}`);
+        console.log(`[ok] Account: ${sub2apiExport.account.name}`);
+        console.log(`[ok] Email: ${sub2apiExport.account.credentials.email || "<unknown>"}`);
+        console.log(`[ok] chatgpt_account_id: ${mask(sub2apiExport.account.credentials.chatgpt_account_id)}`);
+        console.log(`[ok] chatgpt_user_id: ${mask(sub2apiExport.account.extra.chatgpt_user_id)}`);
+        console.log("[note] sub2api import JSON contains access_token, refresh_token and id_token. Do not share it.");
+        emitEvent("result_saved", {
+          path: sub2apiOutPath,
+          account: {
+            email: sub2apiExport.account.credentials.email || "",
+            name: sub2apiExport.account.name,
+            chatgpt_account_id: sub2apiExport.account.credentials.chatgpt_account_id || "",
+          },
+        });
+      } else if (outputMode === "sub2api") {
+        throw new Error("Cannot output only sub2api import without Codex OAuth. Remove --web-only and --no-sub2api-export.");
+      } else if (args.webOnly) {
+        await removeProtocolCheckpoint(checkpointPath);
+      }
+      break flowLoop;
     }
     } finally {
       if (rl) rl.close();
@@ -1331,6 +1346,14 @@ async function resumeCodexOauth(client, options, checkpoint) {
   if (!oauth.codeVerifier || !oauth.state) throw new Error("CHECKPOINT_INVALID: missing OAuth PKCE state");
   if (checkpoint.stage === "callback_ready" && oauth.callbackUrl) {
     ensureCallbackHasOAuthCode(oauth.callbackUrl);
+    // OAuth code 生命周期只有几分钟：过旧的 checkpoint 恢复兑换注定失败，直接弃档重登
+    const savedAtMs = Date.parse(checkpoint.updated_at || "");
+    if (Number.isFinite(savedAtMs) && Date.now() - savedAtMs > OAUTH_CODE_MAX_AGE_MS) {
+      const ageMin = Math.round((Date.now() - savedAtMs) / 60_000);
+      throw new Error(
+        `CHECKPOINT_INVALID: saved OAuth code is ${ageMin} minutes old and has expired; restarting fresh login.`,
+      );
+    }
     return {
       callbackUrl: oauth.callbackUrl,
       codeVerifier: oauth.codeVerifier,
@@ -1652,18 +1675,39 @@ async function exchangeOAuthCode({ authBase, clientId, code, codeVerifier, redir
     throw new Error(`Token endpoint returned non-JSON HTTP ${res.status}: ${text.slice(0, 180)}`);
   }
   if (!res.ok) {
-    const message = data?.error_description || data?.error || JSON.stringify(data).slice(0, 180);
-    if (String(data?.error || "").toLowerCase() === "invalid_grant") {
+    const detail = tokenErrorDetail(data);
+    if (res.status === 400) {
+      // authorization_code 兑换 400 = code 已被消耗/过期或 PKCE 不匹配，
+      // 保存的 code 不可能再兑换成功，CHECKPOINT_INVALID 前缀触发弃档重登。
       throw new Error(
-        `CHECKPOINT_INVALID: Token exchange failed with HTTP ${res.status}: ${message}. The OAuth code was already used or expired.`,
+        `CHECKPOINT_INVALID: Token exchange failed with HTTP 400: ${detail}. The OAuth code cannot be reused; a fresh login is required.`,
       );
     }
-    throw new Error(`Token exchange failed with HTTP ${res.status}: ${message}`);
+    throw new Error(`Token exchange failed with HTTP ${res.status}: ${detail}`);
   }
   for (const key of ["access_token", "refresh_token", "id_token"]) {
     if (!data[key]) throw new Error(`Token response missing ${key}.`);
   }
   return data;
+}
+
+/** token 端点错误详情提取：error/error_description 可能是字符串，也可能是 {code,type,message} 嵌套对象。 */
+function tokenErrorDetail(data) {
+  const parts = [];
+  const push = (value) => {
+    if (typeof value === "string" && value.trim()) {
+      parts.push(value.trim());
+    } else if (value && typeof value === "object") {
+      const nested = [value.code, value.type, value.message]
+        .filter((item) => typeof item === "string" && item)
+        .join(" ");
+      parts.push(nested || JSON.stringify(value).slice(0, 180));
+    }
+  };
+  push(data?.error_description);
+  push(data?.error);
+  if (!parts.length) parts.push(JSON.stringify(data).slice(0, 180));
+  return parts.join(" | ").slice(0, 300);
 }
 
 async function refreshSub2apiOauthExport({ authBase, sourcePath, targetPath, fallbackClientId, transport }) {
