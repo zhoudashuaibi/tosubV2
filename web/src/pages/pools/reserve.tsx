@@ -19,6 +19,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog';
 import { EmptyState } from '@/components/empty-state';
 import { ImportDialog } from '@/components/import-dialog';
 import { FilterSelect } from '@/components/filter-select';
+import { SortableHead, type SortState } from '@/components/sortable-head';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatRelativeTime } from '@/lib/utils';
 
@@ -26,6 +27,7 @@ export function ReservePoolPage() {
   const queryClient = useQueryClient();
   const [q, setQ] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [sort, setSort] = useState<SortState | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [importOpen, setImportOpen] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
@@ -34,11 +36,12 @@ export function ReservePoolPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['accounts', 'reserve', { q, statusFilter }],
+    queryKey: ['accounts', 'reserve', { q, statusFilter, sort }],
     queryFn: () =>
       accountsApi.list<ReserveAccount>('reserve', {
         q: q || undefined,
         status: statusFilter || undefined,
+        sort: sort ? `${sort.key}:${sort.dir}` : undefined,
         page_size: 200,
       }),
     refetchInterval: 10_000,
@@ -164,12 +167,12 @@ export function ReservePoolPage() {
                 <TableHead className="w-10">
                   <Checkbox checked={selected.size === items.length} onCheckedChange={toggleAll} />
                 </TableHead>
-                <TableHead>邮箱</TableHead>
-                <TableHead>初始余额</TableHead>
-                <TableHead>封禁状态</TableHead>
-                <TableHead>邮件状态</TableHead>
-                <TableHead>导入时间</TableHead>
-                <TableHead>检查时间</TableHead>
+                <SortableHead label="邮箱" sortKey="email" sort={sort} onSort={setSort} />
+                <SortableHead label="初始余额" sortKey="balance" sort={sort} onSort={setSort} firstDir="desc" />
+                <SortableHead label="封禁状态" sortKey="banned" sort={sort} onSort={setSort} />
+                <SortableHead label="邮件状态" sortKey="mail_status" sort={sort} onSort={setSort} />
+                <SortableHead label="导入时间" sortKey="imported_at" sort={sort} onSort={setSort} firstDir="desc" />
+                <SortableHead label="检查时间" sortKey="last_checked_at" sort={sort} onSort={setSort} firstDir="desc" />
                 <TableHead className="text-right">操作</TableHead>
               </TableRow>
             </TableHeader>

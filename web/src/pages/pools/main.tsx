@@ -20,6 +20,7 @@ import { BatchActionBar } from '@/components/batch-action-bar';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { EmptyState } from '@/components/empty-state';
 import { FilterSelect } from '@/components/filter-select';
+import { SortableHead, type SortState } from '@/components/sortable-head';
 import {
   Dialog,
   DialogContent,
@@ -35,7 +36,7 @@ export function MainPoolPage() {
   const queryClient = useQueryClient();
   const [q, setQ] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-  const [sortBalance, setSortBalance] = useState(false);
+  const [sort, setSort] = useState<SortState | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [uploadOpen, setUploadOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
@@ -43,12 +44,12 @@ export function MainPoolPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['accounts', 'main', { q, statusFilter, sortBalance }],
+    queryKey: ['accounts', 'main', { q, statusFilter, sort }],
     queryFn: () =>
       accountsApi.list<MainAccount>('main', {
         q: q || undefined,
         status: statusFilter || undefined,
-        sort: sortBalance ? 'balance:desc' : undefined,
+        sort: sort ? `${sort.key}:${sort.dir}` : undefined,
         page_size: 200,
       }),
     refetchInterval: 10_000,
@@ -145,10 +146,6 @@ export function MainPoolPage() {
             { value: 'needs_reauth', label: '待重新授权' },
           ]}
         />
-        <Button variant={sortBalance ? 'default' : 'outline'} size="sm" onClick={() => setSortBalance((v) => !v)}>
-          <Coins />
-          余额排序
-        </Button>
         <Button variant="outline" size="sm" onClick={() => setAddOpen(true)}>
           <Plus />
           添加账号
@@ -180,12 +177,12 @@ export function MainPoolPage() {
                     }
                   />
                 </TableHead>
-                <TableHead>邮箱</TableHead>
-                <TableHead>状态</TableHead>
-                <TableHead>余额</TableHead>
-                <TableHead>远端状态</TableHead>
-                <TableHead>上传时间</TableHead>
-                <TableHead>最近登录</TableHead>
+                <SortableHead label="邮箱" sortKey="email" sort={sort} onSort={setSort} />
+                <SortableHead label="状态" sortKey="status" sort={sort} onSort={setSort} />
+                <SortableHead label="余额" sortKey="balance" sort={sort} onSort={setSort} firstDir="desc" />
+                <SortableHead label="远端状态" sortKey="remote_status" sort={sort} onSort={setSort} />
+                <SortableHead label="上传时间" sortKey="sub2api_uploaded_at" sort={sort} onSort={setSort} firstDir="desc" />
+                <SortableHead label="最近登录" sortKey="last_login_at" sort={sort} onSort={setSort} firstDir="desc" />
                 <TableHead className="text-right">操作</TableHead>
               </TableRow>
             </TableHeader>

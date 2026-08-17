@@ -10,11 +10,23 @@ import { sanitizeText } from '../../lib/sanitize.js';
 
 const POOLS = ['reserve', 'main', 'discard'];
 const SORT_WHITELIST = {
-  reserve: { created_at: 'created_at', email: 'email', imported_at: 'imported_at', balance: 'initial_balance' },
+  reserve: {
+    created_at: 'created_at',
+    email: 'email',
+    imported_at: 'imported_at',
+    balance: 'initial_balance',
+    initial_balance: 'initial_balance',
+    banned: 'banned',
+    mail_status: 'mail_status',
+    last_checked_at: 'last_checked_at',
+  },
   main: {
     created_at: 'created_at',
     email: 'email',
     balance: 'balance',
+    status: 'status',
+    // 远端状态是派生列：active < 其他状态 < 未上传
+    remote_status: `CASE WHEN sub2api_account_id IS NULL THEN 2 WHEN status = 'active' THEN 0 ELSE 1 END`,
     last_login_at: 'last_login_at',
     sub2api_uploaded_at: 'sub2api_uploaded_at',
   },
