@@ -49,12 +49,14 @@ export function SettingsPage() {
 
   // 邮箱取件 / 引擎
   const [endpoint, setEndpoint] = useState('');
+  const [twofaTemplate, setTwofaTemplate] = useState('');
   const [maxJobs, setMaxJobs] = useState('');
   const [timeoutMin, setTimeoutMin] = useState('');
   const [failThreshold, setFailThreshold] = useState('');
   useEffect(() => {
     if (settings) {
       setEndpoint(settings.outlook_fetch_endpoint);
+      setTwofaTemplate(settings.twofa_fetch_template);
       setMaxJobs(String(settings.max_concurrent_jobs));
       setTimeoutMin(String(settings.job_timeout_minutes));
       setFailThreshold(String(settings.proxy_fail_threshold));
@@ -65,6 +67,7 @@ export function SettingsPage() {
     mutationFn: () =>
       settingsApi.update({
         outlook_fetch_endpoint: endpoint,
+        twofa_fetch_template: twofaTemplate,
         max_concurrent_jobs: Number(maxJobs),
         job_timeout_minutes: Number(timeoutMin),
         proxy_fail_threshold: Number(failThreshold),
@@ -173,6 +176,17 @@ export function SettingsPage() {
           <div className="space-y-1.5">
             <Label>Outlook 取件中转地址</Label>
             <Input value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder="https://8t92.cc/api/fetch-mails" />
+          </div>
+          <div className="space-y-1.5">
+            <Label>2FA 取码地址模板</Label>
+            <Input
+              value={twofaTemplate}
+              onChange={(e) => setTwofaTemplate(e.target.value)}
+              placeholder="https://2fa.show/2fa/{code}"
+            />
+            <p className="text-xs text-muted-foreground">
+              登录遇到两步验证时，按此地址获取 6 位验证码；{`{code}`} 会替换为账号的 2FA 取件码（也支持以 xxx 结尾），留空恢复默认
+            </p>
           </div>
           <div className="grid grid-cols-3 gap-4">
             <div className="space-y-1.5">

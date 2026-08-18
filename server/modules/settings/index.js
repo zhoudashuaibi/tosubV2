@@ -1,4 +1,5 @@
 import { maskSecret } from '../../lib/sanitize.js';
+import { errors } from '../../lib/http-errors.js';
 
 export function createSettingsModule({ logger }) {
   return async function settingsModule(app) {
@@ -6,11 +7,13 @@ export function createSettingsModule({ logger }) {
 
     function view() {
       const outlook = app.settings.get('outlook.fetch');
+      const twofa = app.settings.get('twofa.fetch') || {};
       const engineConfig = app.settings.get('engine.config');
       const sms = app.settings.get('sms.providers') || {};
       const sub2api = app.settings.get('sub2api.config') || {};
       return {
         outlook_fetch_endpoint: outlook.endpoint,
+        twofa_fetch_template: twofa.template || 'https://2fa.show/2fa/{code}',
         max_concurrent_jobs: engineConfig.max_concurrent_jobs,
         job_timeout_minutes: engineConfig.job_timeout_minutes,
         proxy_fail_threshold: engineConfig.proxy_fail_threshold,
@@ -55,6 +58,20 @@ export function createSettingsModule({ logger }) {
           }
         }
         app.settings.set('outlook.fetch', { endpoint: endpoint || 'https://8t92.cc/api/fetch-mails' });
+      }
+      if (body.twofa_fetch_template !== undefined) {
+        const template = String(body.twofa_fetch_template || '').trim();
+        if (template) {
+          // 校验占位符替换后的完整 URL 合法（{code} / 结尾 xxx 均为占位写法）
+          const probe = template.includes('{code}') ? template.replaceAll('{code}', 'A1B2C3D4') : template.replace(/xxx$/i, 'A1B2C3D4');
+          try {
+            const parsed = new URL(probe);
+            if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('bad');
+          } catch {
+            throw errors.validation('2FA 取码地址模板必须是有效的 HTTP/HTTPS 地址（含 {code} 占位符）');
+          }
+        }
+        app.settings.set('twofa.fetch', { template: template || 'https://2fa.show/2fa/{code}' });
       }
       if (
         body.max_concurrent_jobs !== undefined ||

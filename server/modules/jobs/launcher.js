@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveTotpPickupUrl, DEFAULT_TWOFA_FETCH_TEMPLATE } from '../../lib/totp-pickup.js';
 
 /**
  * spawn protocol-login 子进程 + env 注入 + stdout 逐行 json-events 解析 + stderr 落日志文件。
@@ -19,6 +20,11 @@ export function createLauncher({ config, logger }) {
       CHATGPT_PROXY_MAX_ATTEMPTS: String(Math.max(1, 10 - (job.proxy_attempts || 0))),
       CHATGPT_LOGIN_PASSWORD: account?.credentials?.password ?? '',
       CHATGPT_TOTP_SECRET: account?.credentials?.totp_secret ?? '',
+      // 2FA 在线取件：模板 + 账号取件码在此解析成完整 URL，子进程直接 GET
+      CHATGPT_TOTP_PICKUP_URL: resolveTotpPickupUrl(
+        config.settingsGet?.('twofa.fetch')?.template || DEFAULT_TWOFA_FETCH_TEMPLATE,
+        account?.credentials?.totp_pickup_code,
+      ),
       TOSUB2_JOB_ATTEMPT: String(attempt),
       TOSUB2_TLS_PROFILE: '',
     };

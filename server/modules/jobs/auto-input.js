@@ -4,6 +4,12 @@ import { fetchOutlookOtpCandidates } from '../../core/outlook-mail.mjs';
 import { fetchMailboxOtpCandidates } from '../../core/mail-otp.mjs';
 import { createSmsProvider } from '../../core/sms-providers.mjs';
 import { generateTotp } from '../../lib/totp.js';
+import {
+  DEFAULT_TWOFA_FETCH_TEMPLATE,
+  fetchTotpCodeFromPickupUrl,
+  msUntilNextTotpWindow,
+  resolveTotpPickupUrl,
+} from '../../lib/totp-pickup.js';
 
 /**
  * input_required 自动作答（03 §8.4）。
@@ -53,6 +59,10 @@ export function createAutoInput({ config, logger }) {
           return { wait: true };
         }
       }
+      // 兜底：子进程内取件失败转人工输入时，引擎侧再试在线取件（2fa.show 等）
+      if (kind === 'mfa_otp' && credentials.totp_pickup_code) {
+        return pickupTotp(job, session, credentials.totp_pickup_code);
+      }
       return { wait: true };
     }
 
@@ -69,6 +79,26 @@ export function createAutoInput({ config, logger }) {
     }
 
     return { wait: true };
+  }
+
+  async function pickupTotp(job, session, pickupCode) {
+    const url = resolveTotpPickupUrl(
+      config.settingsGet?.('twofa.fetch')?.template || DEFAULT_TWOFA_FETCH_TEMPLATE,
+      pickupCode,
+    );
+    try {
+      const code = await fetchTotpCodeFromPickupUrl(url);
+      // 同窗口内已提交且被拒的码不重复提交：等下一个 30s 窗口换新码
+      if (session.lastPickupCode === code) return { defer: msUntilNextTotpWindow() };
+      session.lastPickupCode = code;
+      session.pickupErrors = 0;
+      return { submit: { action: 'input', value: code } };
+    } catch (error) {
+      session.pickupErrors = (session.pickupErrors || 0) + 1;
+      logger?.warn?.({ jobId: job.id, err: String(error.message || error).slice(0, 160) }, '2FA 取件失败');
+      if (session.pickupErrors >= 3) return { wait: true };
+      return { defer: OTP_POLL_INTERVAL_MS * 2 };
+    }
   }
 
   async function pollEmailOtp(job, account, session, stageStartedAt) {

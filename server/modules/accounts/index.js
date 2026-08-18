@@ -3,7 +3,7 @@ import path from 'node:path';
 import { parsePagination } from '../../lib/db.js';
 import { errors } from '../../lib/http-errors.js';
 import { createPools } from './pools.js';
-import { parseImportLines, credentialsForImport } from './import.js';
+import { parseImportLines, parseTwofaLines, parsePasswordFileText, credentialsForImport } from './import.js';
 import { createMailInit } from './mail-init.js';
 import { createBanMailCheck } from './ban-mail-check.js';
 import { sanitizeText } from '../../lib/sanitize.js';
@@ -169,6 +169,7 @@ export function createAccountsModule({ engine, logger }) {
     function accountView(row, pool) {
       const base = { id: row.id, email: row.email, pool: row.pool, status: row.status, note: row.note };
       if (pool === 'reserve') {
+        const credentials = decryptCredentials(row);
         return {
           ...base,
           initial_balance: row.initial_balance,
@@ -179,6 +180,7 @@ export function createAccountsModule({ engine, logger }) {
           mail_error: row.mail_error ? sanitizeText(row.mail_error) : null,
           imported_at: row.imported_at,
           last_checked_at: row.last_checked_at,
+          has_2fa: Boolean(credentials?.totp_pickup_code || credentials?.totp_secret),
         };
       }
       if (pool === 'main') {
@@ -196,6 +198,7 @@ export function createAccountsModule({ engine, logger }) {
           has_refresh_token: Boolean(tokens?.refresh_token),
           has_password: Boolean(credentials?.password),
           has_totp: Boolean(credentials?.totp_secret),
+          has_2fa: Boolean(credentials?.totp_pickup_code || credentials?.totp_secret),
           auto_repair_blocked: Boolean(row.auto_repair_blocked),
         };
       }
@@ -255,16 +258,29 @@ export function createAccountsModule({ engine, logger }) {
     }
 
     // ---------------- 导入（备用池） ----------------
+    // 把增量凭据字段（2FA 取件码 / ChatGPT 密码）合并进已有账号的加密凭据
+    const mergeCredentials = (accountId, patch) => {
+      const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(accountId);
+      if (!account) return false;
+      db.prepare('UPDATE accounts SET credentials_enc = ?, updated_at = ? WHERE id = ?').run(
+        crypto.encryptJson({ ...decryptCredentials(account), ...patch }, 'accounts.credentials_enc'),
+        new Date().toISOString(),
+        accountId,
+      );
+      return true;
+    };
+
     app.post(
       '/api/v1/accounts/import',
       {
         schema: {
           body: {
             type: 'object',
-            required: ['text'],
             additionalProperties: false,
             properties: {
               text: { type: 'string', maxLength: 2_000_000 },
+              twofa_text: { type: 'string', maxLength: 500_000 },
+              passwords_text: { type: 'string', maxLength: 2_000_000 },
               force_discard: { type: 'boolean' },
               force_remote: { type: 'boolean' },
             },
@@ -272,8 +288,26 @@ export function createAccountsModule({ engine, logger }) {
         },
       },
       async (request, reply) => {
-        const { text, force_discard = false, force_remote = false } = request.body;
+        const {
+          text = '',
+          twofa_text = '',
+          passwords_text = '',
+          force_discard = false,
+          force_remote = false,
+        } = request.body;
+        if (!String(text).trim() && !String(twofa_text).trim() && !String(passwords_text).trim()) {
+          throw errors.validation('导入内容不能为空');
+        }
         const parsed = parseImportLines(text);
+        const twofaParsed = parseTwofaLines(twofa_text);
+        // 邮箱 -> 2FA 取件码；随导入逐个绑定并从 Map 移除，剩余的兜底关联到已有账号
+        const twofaByEmail = new Map(twofaParsed.filter((r) => r.ok).map((r) => [r.email, r.pickupCode]));
+        const twofaTotal = twofaByEmail.size;
+        const twofaInvalidLines = twofaParsed.filter((r) => !r.ok).map(({ line, reason }) => ({ line, reason }));
+        // ChatGPT 会话导出文件：邮箱 -> ChatGPT 登录密码
+        const passwordFile = parsePasswordFileText(passwords_text);
+        const passwordByEmail = passwordFile.passwords;
+        const passwordTotal = passwordByEmail.size;
         const invalidLines = parsed.filter((r) => !r.ok && !r.duplicateInBatch).map(({ line, reason }) => ({ line, reason }));
         const duplicatesInBatch = [...new Set(parsed.filter((r) => r.duplicateInBatch).map((r) => r.email))];
 
@@ -298,6 +332,8 @@ export function createAccountsModule({ engine, logger }) {
 
         const insertTx = db.transaction(() => {
           for (const entry of good) {
+            entry.pickupCode = twofaByEmail.get(entry.email) || null;
+            entry.chatgptPassword = passwordByEmail.get(entry.email) || null;
             const existing = db
               .prepare('SELECT id, pool, discard_reason FROM accounts WHERE email = ? COLLATE NOCASE')
               .get(entry.email);
@@ -311,10 +347,20 @@ export function createAccountsModule({ engine, logger }) {
                   new Date().toISOString(),
                   existing.id,
                 );
+                if (entry.pickupCode) twofaByEmail.delete(entry.email);
+                if (entry.chatgptPassword) passwordByEmail.delete(entry.email);
                 continue;
               }
               if (existing.pool === 'main') {
                 duplicatesInMain.push(entry.email);
+                // 重复账号不重新导入，但 2FA 取件码 / ChatGPT 密码仍写入，供后续重新授权/自动修复使用
+                const patch = {};
+                if (entry.pickupCode) patch.totp_pickup_code = entry.pickupCode;
+                if (entry.chatgptPassword) patch.password = entry.chatgptPassword;
+                if (Object.keys(patch).length && mergeCredentials(existing.id, patch)) {
+                  if (entry.pickupCode) twofaByEmail.delete(entry.email);
+                  if (entry.chatgptPassword) passwordByEmail.delete(entry.email);
+                }
                 continue;
               }
               if (existing.pool === 'discard') {
@@ -336,6 +382,8 @@ export function createAccountsModule({ engine, logger }) {
                 );
                 pools.recordEvent(existing.id, 'imported', { source: 'manual', force: 'discard' });
                 created.push({ id: existing.id, email: entry.email, status: 'mail_pending' });
+                if (entry.pickupCode) twofaByEmail.delete(entry.email);
+                if (entry.chatgptPassword) passwordByEmail.delete(entry.email);
                 continue;
               }
             }
@@ -361,9 +409,25 @@ export function createAccountsModule({ engine, logger }) {
             const id = Number(result.lastInsertRowid);
             pools.recordEvent(id, 'imported', { source: 'manual' });
             created.push({ id, email: entry.email, status: 'mail_pending' });
+            if (entry.pickupCode) twofaByEmail.delete(entry.email);
+            if (entry.chatgptPassword) passwordByEmail.delete(entry.email);
           }
         });
         insertTx();
+
+        // 兜底：未随导入文本绑定的 2FA 取件码 / ChatGPT 密码，按邮箱更新任意池的已有账号
+        const twofaUnmatched = [];
+        for (const [email, pickupCode] of twofaByEmail) {
+          const existing = db.prepare('SELECT id FROM accounts WHERE email = ? COLLATE NOCASE').get(email);
+          if (existing) mergeCredentials(existing.id, { totp_pickup_code: pickupCode });
+          else twofaUnmatched.push(email);
+        }
+        const passwordsUnmatched = [];
+        for (const [email, chatgptPassword] of passwordByEmail) {
+          const existing = db.prepare('SELECT id FROM accounts WHERE email = ? COLLATE NOCASE').get(email);
+          if (existing) mergeCredentials(existing.id, { password: chatgptPassword });
+          else passwordsUnmatched.push(email);
+        }
 
         // 异步邮件初始化
         if (created.length) mailInit.enqueue(created.map((c) => c.id), { source: 'import' });
@@ -378,6 +442,12 @@ export function createAccountsModule({ engine, logger }) {
           duplicates_in_discard: duplicatesInDiscard,
           duplicates_remote: duplicatesRemote,
           invalid_lines: invalidLines,
+          twofa_bound: twofaTotal - twofaUnmatched.length,
+          twofa_unmatched: twofaUnmatched,
+          twofa_invalid_lines: twofaInvalidLines,
+          passwords_bound: passwordTotal - passwordsUnmatched.length,
+          passwords_unmatched: passwordsUnmatched,
+          passwords_error: passwordFile.error,
         };
       },
     );
@@ -396,6 +466,7 @@ export function createAccountsModule({ engine, logger }) {
               password: { type: 'string', maxLength: 512 },
               mail_api_url: { type: 'string', maxLength: 2048 },
               totp_secret: { type: 'string', maxLength: 256 },
+              totp_pickup_code: { type: 'string', maxLength: 256 },
               phone: { type: 'string', maxLength: 32 },
               outlook: {
                 type: 'object',
@@ -418,6 +489,7 @@ export function createAccountsModule({ engine, logger }) {
         if (body.password) credentials.password = body.password;
         if (body.mail_api_url) credentials.mail_api_url = body.mail_api_url;
         if (body.totp_secret) credentials.totp_secret = body.totp_secret;
+        if (body.totp_pickup_code) credentials.totp_pickup_code = body.totp_pickup_code;
         if (body.phone) credentials.phone = body.phone;
         if (body.outlook?.refresh_token) credentials.outlook = body.outlook;
         if (!Object.keys(credentials).length) throw errors.validation('凭据至少提供一项');

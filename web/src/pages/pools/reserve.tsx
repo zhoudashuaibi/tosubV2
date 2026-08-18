@@ -54,7 +54,8 @@ export function ReservePoolPage() {
   };
 
   const importMutation = useMutation({
-    mutationFn: (text: string) => accountsApi.import(text, { force_discard: forceDiscard, force_remote: forceRemote }),
+    mutationFn: ([text, twofaText, passwordsText]: [string, string, string]) =>
+      accountsApi.import(text, twofaText, passwordsText, { force_discard: forceDiscard, force_remote: forceRemote }),
     onSuccess: (result) => {
       setImportResult(result);
       if (result.created > 0) toast.success(`已开始 ${result.created} 个账号的邮件初始化，稍后刷新查看余额与状态`);
@@ -211,6 +212,9 @@ export function ReservePoolPage() {
                     ) : (
                       account.email
                     )}
+                    {account.has_2fa && (
+                      <Badge variant="info" className="ml-2 py-0 font-sans">2FA</Badge>
+                    )}
                     {account.status === 'joining' && (
                       <Link to="/jobs" className="ml-2 text-xs text-primary hover:underline">
                         查看任务 →
@@ -276,15 +280,17 @@ export function ReservePoolPage() {
         onOpenChange={setImportOpen}
         title="导入 Outlook 邮箱"
         placeholder={'邮箱----邮箱密码----clientId----refreshToken\n例：a@b.com----pass----9e5f94bc-e8a4-4e73-b8be-63364c29d753----M.C509_BL2...'}
+        twofaPlaceholder={'邮箱----2FA取件码（只有开启两步验证的账号需要填）\n例：a@b.com----CBCLDAV22HRBZUDELLKNRPK4L3YJ25IQ'}
+        passwordsPlaceholder={'ChatGPT 会话导出 JSON，密码在 meta.label 第 3 段；无密码账号可不管\n例：[{"meta":{"label":"a@b.com----xxxx----P@ssw0rd!"}}]'}
         result={importResult}
         busy={importMutation.isPending}
-        onSubmit={(text) => {
+        onSubmit={(text, twofaText, passwordsText) => {
           if (importResult) {
             // 已有结果 → 点导入 = 带 force 重提交
             setForceDiscard(true);
             setForceRemote(true);
           }
-          importMutation.mutate(text);
+          importMutation.mutate([text, twofaText, passwordsText]);
         }}
       />
       {importResult && (importResult.duplicates_in_discard.length > 0 || importResult.duplicates_remote.length > 0) && (

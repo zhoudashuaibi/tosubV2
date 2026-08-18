@@ -5,6 +5,7 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { fetchSentinelToken } from "./sentinel.mjs";
+import { fetchTotpCodeFromPickupUrl, msUntilNextTotpWindow } from "../lib/totp-pickup.js";
 import {
   browserIdentityForTlsProfile,
   shouldUseTlsTransport,
@@ -493,6 +494,8 @@ async function run() {
       return;
     }
     if (!args.setupTotp) emitEvent("starting", { mode: "full", email: args.email || "" });
+    // 2FA 在线取件 URL 由启动方（引擎 launcher）按 设置模板+账号取件码 解析后注入
+    const totpPickupUrl = process.env.CHATGPT_TOTP_PICKUP_URL || "";
     await transport.prepareProxy(proxyTemplate, `${chatgptBase}/`);
     if (args.setupTotp) {
       const resultPath = path.resolve(args.totpResult || DEFAULT_TOTP_RESULT);
@@ -511,6 +514,7 @@ async function run() {
           rl,
           password: process.env.CHATGPT_LOGIN_PASSWORD || "",
           totpSecret: process.env.CHATGPT_TOTP_SECRET || "",
+          totpPickupUrl,
         });
         console.log(
           client.jar.has("__Secure-next-auth.session-token")
@@ -601,6 +605,7 @@ async function run() {
           rl,
           password: process.env.CHATGPT_LOGIN_PASSWORD || "",
           totpSecret: process.env.CHATGPT_TOTP_SECRET || "",
+          totpPickupUrl,
         });
         console.log(
           client.jar.has("__Secure-next-auth.session-token")
@@ -889,7 +894,7 @@ async function askSetupTotpOtp(rl) {
   }
 }
 
-async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, password, totpSecret }) {
+async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, password, totpSecret, totpPickupUrl }) {
   await client.follow(`${chatgptBase}/`, { referer: `${chatgptBase}/` });
   await client.getJson("GET", `${chatgptBase}/api/auth/providers`, {
     referer: `${chatgptBase}/`,
@@ -930,20 +935,51 @@ async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, passw
   console.log(`[info] Auth page: ${safeUrl(authPage.finalUrl)}`);
   if (authPage.last?.text) {
     console.log(`[info] Page text: ${summarizeHtml(authPage.last.text)}`);
+    // 诊断钩子：TOSUB2_DEBUG_AUTH_HTML=<path> 时把认证页原始 HTML 落盘
+    const htmlDumpPath = process.env.TOSUB2_DEBUG_AUTH_HTML;
+    if (htmlDumpPath) {
+      fs.writeFile(path.resolve(htmlDumpPath), authPage.last.text).catch(() => {});
+    }
   }
 
   let authenticated;
   let loginMethod;
   if (isPasswordLoginPage(authPage.finalUrl)) {
-    loginMethod = "password";
-    console.log("[3/5] Password login page reached.");
-    emitStageEvent("password");
-    authenticated = await verifyPassword(client, {
-      authBase,
-      rl,
-      password,
-      referer: authPage.finalUrl,
-    });
+    if (!password) {
+      // 未配置 ChatGPT 密码（如仅凭 Outlook 收件凭据导入的备用池账号）：
+      // 先尝试把会话切换为邮箱一次性验证码登录；失败再回退人工输入密码
+      const otpReferer = await switchPasswordPageToEmailOtp(client, { authBase, referer: authPage.finalUrl });
+      if (otpReferer) {
+        loginMethod = "email_otp";
+        console.log("[3/5] No password configured; switched to email one-time-code login.");
+        emitStageEvent("email_otp");
+        authenticated = await verifyEmailOtp(client, {
+          authBase,
+          rl,
+          referer: otpReferer,
+        });
+      } else {
+        loginMethod = "password";
+        console.log("[3/5] Password login page reached.");
+        emitStageEvent("password");
+        authenticated = await verifyPassword(client, {
+          authBase,
+          rl,
+          password,
+          referer: authPage.finalUrl,
+        });
+      }
+    } else {
+      loginMethod = "password";
+      console.log("[3/5] Password login page reached.");
+      emitStageEvent("password");
+      authenticated = await verifyPassword(client, {
+        authBase,
+        rl,
+        password,
+        referer: authPage.finalUrl,
+      });
+    }
   } else if (isEmailVerificationPage(authPage.finalUrl)) {
     loginMethod = "email_otp";
     console.log("[3/5] Email OTP page reached. Enter code, or type r to resend.");
@@ -971,6 +1007,7 @@ async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, passw
     rl,
     payload: authenticated,
     totpSecret,
+    totpPickupUrl,
     referer: authPage.finalUrl,
   });
   authenticated = await completeAccountProfileIfNeeded(client, {
@@ -1009,8 +1046,55 @@ async function selectChatgptLoginWorkspaceIfNeeded(client, { authBase, payload }
   return data;
 }
 
-async function verifyPassword(client, { authBase, rl, password, referer }) {
-  let nextPassword = password;
+/**
+ * 密码页 → 邮箱一次性验证码登录：提交密码页隐藏表单 intent=passwordless_login_send_otp
+ * （对应网页上「使用一次性代码登录」按钮），服务端会向账号邮箱发送 6 位验证码。
+ * 切换成功返回验证码页 URL（作为后续 validate 的 referer），失败返回 null（回退密码流程）。
+ */
+async function switchPasswordPageToEmailOtp(client, { authBase, referer }) {
+  try {
+    const result = await client.request("POST", `${authBase}/log-in/password`, {
+      origin: authBase,
+      referer,
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      headers: {
+        // 表单导航式提交（等价浏览器点击「使用一次性代码登录」按钮提交隐藏表单）
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-user": "?1",
+        "upgrade-insecure-requests": "1",
+      },
+      form: { intent: "passwordless_login_send_otp" },
+    });
+    if (result.res.status >= 400) {
+      console.log(
+        `[warn] Email one-time-code switch rejected (HTTP ${result.res.status}: ${String(result.text || "").slice(0, 160)}); falling back to password input.`,
+      );
+      return null;
+    }
+    let finalUrl = result.location || `${authBase}/log-in/password`;
+    let pageText = result.text || "";
+    if (result.location) {
+      const page = await client.follow(result.location, { referer });
+      finalUrl = page.finalUrl;
+      pageText = page.last?.text || "";
+    }
+    const looksLikeOtpPage =
+      isEmailVerificationPage(finalUrl) || /验证码|one-time code|verification code|enter.{0,20}code/i.test(summarizeHtml(pageText));
+    if (!looksLikeOtpPage) {
+      console.log(`[warn] Email one-time-code switch landed on ${safeUrl(finalUrl)}; falling back to password input.`);
+      return null;
+    }
+    console.log("[ok] Email one-time-code login requested; a 6-digit code has been sent to the mailbox.");
+    return finalUrl;
+  } catch (error) {
+    console.log(`[warn] Email one-time-code switch failed (${error.message}); falling back to password input.`);
+    return null;
+  }
+}
+
+async function verifyPassword(client, { authBase, rl, password, referer }) {  let nextPassword = password;
   for (;;) {
     const value = nextPassword || (await askInput(rl, "Password (q=quit): ", "password"));
     nextPassword = "";
@@ -1028,7 +1112,7 @@ async function verifyPassword(client, { authBase, rl, password, referer }) {
   }
 }
 
-async function completeTotpMfaIfNeeded(client, { authBase, rl, payload, totpSecret, referer }) {
+async function completeTotpMfaIfNeeded(client, { authBase, rl, payload, totpSecret, totpPickupUrl, referer }) {
   if (!isMfaChallengePayload(payload)) return payload;
   const factor = pickTotpFactor(payload);
   if (!factor?.id) throw new Error("2FA is required, but the response does not contain a TOTP factor ID");
@@ -1041,16 +1125,30 @@ async function completeTotpMfaIfNeeded(client, { authBase, rl, payload, totpSecr
     force_fresh_challenge: false,
   }, { referer });
 
+  // 验证码来源优先级：本地 2FA 密钥 > 在线取件 URL（2fa.show 等）> 人工输入
   let code;
-  let generatedFromSecret = false;
+  let codeSource; // "secret" | "pickup" | "manual"
   if (totpSecret) {
     code = generateTotp(totpSecret);
-    generatedFromSecret = true;
+    codeSource = "secret";
     console.log("[mfa] Generated a 6-digit code from the configured 2FA key.");
+  } else if (totpPickupUrl) {
+    codeSource = "pickup";
+    try {
+      code = await fetchTotpCodeFromPickupUrl(totpPickupUrl);
+      console.log("[mfa] Fetched a 6-digit code from the 2FA pickup URL.");
+    } catch (error) {
+      console.log(`[warn] 2FA pickup fetch failed (${error.message}); falling back to manual input.`);
+      code = await askTotpOtp(rl);
+      codeSource = "manual";
+    }
   } else {
     code = await askTotpOtp(rl);
+    codeSource = "manual";
   }
+
   const challengeUrl = getContinueUrl(payload) || `${authBase}/mfa-challenge/${factor.id}`;
+  let pickupRetries = 0;
   for (;;) {
     try {
       const { data } = await authJsonStep(client, authBase, "POST", "/api/accounts/mfa/verify", {
@@ -1062,15 +1160,33 @@ async function completeTotpMfaIfNeeded(client, { authBase, rl, payload, totpSecr
       return data;
     } catch (error) {
       if (!/HTTP (400|401)|invalid.*(?:totp|code)|incorrect.*code/i.test(String(error?.message || ""))) throw error;
-      console.log(
-        generatedFromSecret
-          ? "[warn] The code generated from the configured 2FA key was rejected; enter a current code manually."
-          : "[warn] The 2FA code was rejected; enter a new code.",
-      );
-      generatedFromSecret = false;
+      if (codeSource === "pickup" && pickupRetries < 3) {
+        // 被拒通常意味着取到的码已过窗口：等下一个 30s 窗口换新码重试
+        pickupRetries += 1;
+        const waitMs = msUntilNextTotpWindow();
+        console.log(
+          `[warn] The fetched 2FA code was rejected; waiting ${Math.round(waitMs / 1000)}s for the next code window (retry ${pickupRetries}/3).`,
+        );
+        await sleep(waitMs);
+        try {
+          code = await fetchTotpCodeFromPickupUrl(totpPickupUrl);
+          continue;
+        } catch (fetchError) {
+          console.log(`[warn] 2FA pickup refetch failed (${fetchError.message}); falling back to manual input.`);
+        }
+      } else if (codeSource === "secret") {
+        console.log("[warn] The code generated from the configured 2FA key was rejected; enter a current code manually.");
+      } else {
+        console.log("[warn] The 2FA code was rejected; enter a new code.");
+      }
+      codeSource = "manual";
       code = await askTotpOtp(rl);
     }
   }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isPasswordLoginPage(url) {
@@ -2313,7 +2429,10 @@ Options:
 
 Notes:
   Set CHATGPT_LOGIN_PASSWORD for password login and CHATGPT_TOTP_SECRET for automatic
-  6-digit TOTP generation. These values are read from the environment and are not logged.
+  6-digit TOTP generation. Set CHATGPT_TOTP_PICKUP_URL to fetch the 6-digit code from an
+  online 2FA pickup service (e.g. 2fa.show) when no local secret is configured; rejected
+  codes are retried on the next 30s window before falling back to manual input.
+  These values are read from the environment and are not logged.
   With --json-events, human-readable logs move to stderr and interactive prompts become
   {"type":"input_required",...} events answered by stdin lines like {"action":"input","value":"123456"}.
   TOSUB2_JOB_ATTEMPT sets the attempt number embedded in every event.

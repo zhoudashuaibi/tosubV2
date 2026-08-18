@@ -61,6 +61,7 @@ export interface ReserveAccount {
   mail_error: string | null;
   imported_at: string | null;
   last_checked_at: string | null;
+  has_2fa: boolean;
 }
 
 export interface MainAccount {
@@ -78,6 +79,7 @@ export interface MainAccount {
   has_refresh_token: boolean;
   has_password: boolean;
   has_totp: boolean;
+  has_2fa: boolean;
   auto_repair_blocked: boolean;
 }
 
@@ -104,6 +106,12 @@ export interface ImportResult {
   duplicates_in_discard: { email: string; reason: string }[];
   duplicates_remote: string[];
   invalid_lines: { line: number; reason: string }[];
+  twofa_bound?: number;
+  twofa_unmatched?: string[];
+  twofa_invalid_lines?: { line: number; reason: string }[];
+  passwords_bound?: number;
+  passwords_unmatched?: string[];
+  passwords_error?: string | null;
 }
 
 export interface ProxyImportResult {
@@ -266,6 +274,7 @@ export interface DashboardSummary {
 
 export interface SettingsView {
   outlook_fetch_endpoint: string;
+  twofa_fetch_template: string;
   max_concurrent_jobs: number;
   job_timeout_minutes: number;
   proxy_fail_threshold: number;

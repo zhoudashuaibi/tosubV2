@@ -21,6 +21,13 @@ async function main() {
     process.exit(2);
   }
   const script = JSON.parse(fs.readFileSync(scriptPath, 'utf8'));
+  if (process.env.TOSUB2_MOCK_ENV_DUMP) {
+    // 测试钩子：断言 launcher 注入的凭据环境变量
+    fs.appendFileSync(
+      process.env.TOSUB2_MOCK_ENV_DUMP,
+      `${JSON.stringify({ totpPickupUrl: process.env.CHATGPT_TOTP_PICKUP_URL || '', totpSecret: process.env.CHATGPT_TOTP_SECRET || '' })}\n`,
+    );
+  }
   const attempt = Math.max(1, Number.parseInt(process.env.TOSUB2_JOB_ATTEMPT || '1', 10) || 1);
   const emit = (type, fields = {}) => {
     process.stdout.write(`${JSON.stringify({ type, ts: new Date().toISOString(), attempt, ...fields })}\n`);

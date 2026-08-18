@@ -205,6 +205,7 @@ export function MainPoolPage() {
                   <TableCell className="max-w-[240px] truncate font-mono text-xs">
                     {account.status === 'needs_reauth' && <span className="mr-1 text-[var(--warning)]">⚠</span>}
                     {account.email}
+                    {account.has_2fa && <Badge variant="info" className="ml-2 py-0 font-sans">2FA</Badge>}
                   </TableCell>
                   <TableCell>
                     <StatusBadge domain="main" value={account.status} />
@@ -523,6 +524,7 @@ function AddAccountDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
   const [password, setPassword] = useState('');
   const [mailApiUrl, setMailApiUrl] = useState('');
   const [totpSecret, setTotpSecret] = useState('');
+  const [totpPickupCode, setTotpPickupCode] = useState('');
   const [outlookPassword, setOutlookPassword] = useState('');
   const [outlookClientId, setOutlookClientId] = useState('');
   const [outlookRefreshToken, setOutlookRefreshToken] = useState('');
@@ -533,6 +535,7 @@ function AddAccountDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
       if (password) body.password = password;
       if (mailApiUrl) body.mail_api_url = mailApiUrl;
       if (totpSecret) body.totp_secret = totpSecret;
+      if (totpPickupCode) body.totp_pickup_code = totpPickupCode;
       if (outlookRefreshToken) {
         body.outlook = {
           password: outlookPassword,
@@ -549,6 +552,7 @@ function AddAccountDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
       setPassword('');
       setMailApiUrl('');
       setTotpSecret('');
+      setTotpPickupCode('');
       setOutlookPassword('');
       setOutlookClientId('');
       setOutlookRefreshToken('');
@@ -581,6 +585,10 @@ function AddAccountDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
           <div className="space-y-1.5">
             <Label>2FA 密钥（Base32）</Label>
             <Input value={totpSecret} onChange={(e) => setTotpSecret(e.target.value)} placeholder="（可选）" />
+          </div>
+          <div className="space-y-1.5">
+            <Label>2FA 取件码（在线取码，如 2fa.show）</Label>
+            <Input value={totpPickupCode} onChange={(e) => setTotpPickupCode(e.target.value)} placeholder="（可选）CBCLDAV22HRBZUDELLKNRPK4L3YJ25IQ" />
           </div>
           <div className="space-y-1.5 rounded-md border p-3">
             <Label className="text-muted-foreground">Outlook 凭据（可选，用于自动收码）</Label>
