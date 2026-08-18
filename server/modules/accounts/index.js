@@ -181,6 +181,7 @@ export function createAccountsModule({ engine, logger }) {
           imported_at: row.imported_at,
           last_checked_at: row.last_checked_at,
           has_2fa: Boolean(credentials?.totp_pickup_code || credentials?.totp_secret),
+          has_password: Boolean(credentials?.password),
         };
       }
       if (pool === 'main') {

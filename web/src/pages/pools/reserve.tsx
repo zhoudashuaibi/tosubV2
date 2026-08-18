@@ -212,6 +212,9 @@ export function ReservePoolPage() {
                     ) : (
                       account.email
                     )}
+                    {account.has_password && (
+                      <Badge variant="secondary" className="ml-2 py-0 font-sans">密码</Badge>
+                    )}
                     {account.has_2fa && (
                       <Badge variant="info" className="ml-2 py-0 font-sans">2FA</Badge>
                     )}

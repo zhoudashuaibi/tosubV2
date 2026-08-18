@@ -205,6 +205,7 @@ export function MainPoolPage() {
                   <TableCell className="max-w-[240px] truncate font-mono text-xs">
                     {account.status === 'needs_reauth' && <span className="mr-1 text-[var(--warning)]">⚠</span>}
                     {account.email}
+                    {account.has_password && <Badge variant="secondary" className="ml-2 py-0 font-sans">密码</Badge>}
                     {account.has_2fa && <Badge variant="info" className="ml-2 py-0 font-sans">2FA</Badge>}
                   </TableCell>
                   <TableCell>

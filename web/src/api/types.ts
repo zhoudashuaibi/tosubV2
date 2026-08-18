@@ -62,6 +62,7 @@ export interface ReserveAccount {
   imported_at: string | null;
   last_checked_at: string | null;
   has_2fa: boolean;
+  has_password: boolean;
 }
 
 export interface MainAccount {
