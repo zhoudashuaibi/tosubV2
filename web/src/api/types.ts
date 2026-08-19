@@ -98,6 +98,18 @@ export interface DiscardAccount {
 
 export type Account = ReserveAccount | MainAccount | DiscardAccount;
 
+/** 备用池账号凭据的脱敏视图（当前值掩码显示） */
+export interface AccountCredentialsView {
+  password: string | null;
+  totp_pickup_code: string | null;
+  totp_secret: string | null;
+  outlook: {
+    password: string | null;
+    client_id: string | null;
+    refresh_token: string | null;
+  };
+}
+
 export interface ImportResult {
   created: number;
   accounts?: { id: number; email: string; status: string }[];

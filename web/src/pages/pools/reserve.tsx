@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { Inbox, Loader2, RefreshCw, Search, Trash2, Upload } from 'lucide-react';
+import { Inbox, Loader2, Pencil, RefreshCw, Search, Trash2, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { accountsApi } from '@/api';
 import { errorMessage } from '@/api/client';
@@ -18,6 +18,7 @@ import { BatchActionBar } from '@/components/batch-action-bar';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { EmptyState } from '@/components/empty-state';
 import { ImportDialog } from '@/components/import-dialog';
+import { CredentialsEditDialog } from '@/components/credentials-edit-dialog';
 import { FilterSelect } from '@/components/filter-select';
 import { SortableHead, type SortState } from '@/components/sortable-head';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -34,6 +35,7 @@ export function ReservePoolPage() {
   const [forceDiscard, setForceDiscard] = useState(false);
   const [forceRemote, setForceRemote] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [editAccount, setEditAccount] = useState<ReserveAccount | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ['accounts', 'reserve', { q, statusFilter, sort }],
@@ -245,6 +247,10 @@ export function ReservePoolPage() {
                       >
                         加入主号池
                       </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setEditAccount(account)}>
+                        <Pencil className="h-3.5 w-3.5" />
+                        编辑
+                      </Button>
                       <Button size="sm" variant="ghost" onClick={() => refreshMailMutation.mutate([account.id])}>
                         重新检查
                       </Button>
@@ -304,6 +310,8 @@ export function ReservePoolPage() {
           </Button>
         </div>
       )}
+
+      <CredentialsEditDialog account={editAccount} open={!!editAccount} onOpenChange={(next) => !next && setEditAccount(null)} />
 
       <ConfirmDialog
         open={deleteOpen}

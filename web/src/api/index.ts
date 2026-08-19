@@ -1,5 +1,6 @@
 import { api } from './client';
 import type {
+  AccountCredentialsView,
   DashboardSummary,
   ImportResult,
   Job,
@@ -70,6 +71,13 @@ export const accountsApi = {
   create: (body: Record<string, unknown>) =>
     api<{ account: MainAccount; job_id: string }>('/accounts', { json: body }),
   refreshMail: (id: number) => api<{ ok: boolean }>(`/accounts/${id}/refresh-mail`, { json: {} }),
+  credentials: (id: number) =>
+    api<{ credentials: AccountCredentialsView }>(`/accounts/${id}/credentials`),
+  updateCredentials: (id: number, body: Record<string, string>) =>
+    api<{ account: ReserveAccount; credentials: AccountCredentialsView }>(`/accounts/${id}/credentials`, {
+      method: 'PATCH',
+      json: body,
+    }),
   joinMain: (ids: number[]) =>
     api<{ started: number[]; skipped: { id: number; reason: string }[] }>('/accounts/join-main', { json: { ids } }),
   batchAuthorize: (ids: number[]) =>

@@ -520,6 +520,124 @@ export function createAccountsModule({ engine, logger }) {
       },
     );
 
+    // ---------------- 凭据查看/编辑（备用池） ----------------
+    const maskCredential = (value) => {
+      const text = String(value || '');
+      if (!text) return null;
+      if (text.length <= 10) return '****';
+      return `${text.slice(0, 4)}…${text.slice(-4)}`;
+    };
+
+    const credentialsView = (credentials) => ({
+      password: maskCredential(credentials?.password),
+      totp_pickup_code: maskCredential(credentials?.totp_pickup_code),
+      totp_secret: maskCredential(credentials?.totp_secret),
+      outlook: {
+        password: maskCredential(credentials?.outlook?.password),
+        client_id: credentials?.outlook?.client_id || null,
+        refresh_token: maskCredential(credentials?.outlook?.refresh_token),
+      },
+    });
+
+    app.get('/api/v1/accounts/:id/credentials', async (request) => {
+      const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(Number(request.params.id));
+      if (!account) throw errors.notFound('账号不存在');
+      if (account.pool !== 'reserve') throw errors.accountState('仅备用号池账号支持编辑凭据');
+      return { credentials: credentialsView(decryptCredentials(account)) };
+    });
+
+    app.patch(
+      '/api/v1/accounts/:id/credentials',
+      {
+        schema: {
+          body: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              password: { type: 'string', maxLength: 512 },
+              totp_pickup_code: { type: 'string', maxLength: 256 },
+              totp_secret: { type: 'string', maxLength: 256 },
+              outlook_password: { type: 'string', maxLength: 512 },
+              outlook_client_id: { type: 'string', maxLength: 64 },
+              outlook_refresh_token: { type: 'string', maxLength: 4096 },
+            },
+          },
+        },
+      },
+      async (request) => {
+        const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(Number(request.params.id));
+        if (!account) throw errors.notFound('账号不存在');
+        if (account.pool !== 'reserve') throw errors.accountState('仅备用号池账号支持编辑凭据');
+
+        const body = request.body || {};
+        // 字段语义：缺省 = 不改；空串 = 清空；非空 = 校验后更新
+        const fields = {
+          password: body.password,
+          totp_pickup_code: body.totp_pickup_code,
+          totp_secret: body.totp_secret,
+          outlook_password: body.outlook_password,
+          outlook_client_id: body.outlook_client_id,
+          outlook_refresh_token: body.outlook_refresh_token,
+        };
+        const touched = Object.entries(fields).filter(([, v]) => v !== undefined);
+        if (!touched.length) throw errors.validation('至少修改一项');
+
+        if (fields.totp_pickup_code && !/^[A-Za-z0-9_-]{8,128}$/.test(fields.totp_pickup_code)) {
+          throw errors.validation('2FA 取件码应为 8-128 位字母数字');
+        }
+        if (fields.totp_secret) {
+          const normalized = fields.totp_secret.toUpperCase().replace(/[\s=]/g, '');
+          if (!/^[A-Z2-7]{16,128}$/.test(normalized)) {
+            throw errors.validation('2FA 密钥必须是仅含 A-Z 和 2-7 的 Base32 字符串');
+          }
+          fields.totp_secret = normalized;
+        }
+        if (fields.outlook_client_id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(fields.outlook_client_id)) {
+          throw errors.validation('clientId 不是 UUID');
+        }
+        if (fields.outlook_refresh_token && fields.outlook_refresh_token.length < 100) {
+          throw errors.validation('refresh_token 长度不足');
+        }
+
+        const credentials = decryptCredentials(account);
+        const apply = (key, value) => {
+          if (value === undefined) return false;
+          if (value === '') delete credentials[key];
+          else credentials[key] = value;
+          return true;
+        };
+        const changed = [];
+        if (apply('password', fields.password)) changed.push('password');
+        if (apply('totp_pickup_code', fields.totp_pickup_code)) changed.push('totp_pickup_code');
+        if (apply('totp_secret', fields.totp_secret)) changed.push('totp_secret');
+        credentials.outlook = { ...(credentials.outlook || {}) };
+        if (fields.outlook_password !== undefined) {
+          if (fields.outlook_password === '') delete credentials.outlook.password;
+          else credentials.outlook.password = fields.outlook_password;
+          changed.push('outlook.password');
+        }
+        if (fields.outlook_client_id !== undefined) {
+          if (fields.outlook_client_id === '') delete credentials.outlook.client_id;
+          else credentials.outlook.client_id = fields.outlook_client_id;
+          changed.push('outlook.client_id');
+        }
+        if (fields.outlook_refresh_token !== undefined) {
+          if (fields.outlook_refresh_token === '') delete credentials.outlook.refresh_token;
+          else credentials.outlook.refresh_token = fields.outlook_refresh_token;
+          changed.push('outlook.refresh_token');
+        }
+
+        db.prepare('UPDATE accounts SET credentials_enc = ?, updated_at = ? WHERE id = ?').run(
+          crypto.encryptJson(credentials, 'accounts.credentials_enc'),
+          new Date().toISOString(),
+          account.id,
+        );
+        pools.recordEvent(account.id, 'credentials_updated', { fields: changed });
+        const fresh = db.prepare('SELECT * FROM accounts WHERE id = ?').get(account.id);
+        return { account: accountView(fresh, 'reserve'), credentials: credentialsView(decryptCredentials(fresh)) };
+      },
+    );
+
     // ---------------- refresh-mail ----------------
     app.post('/api/v1/accounts/:id/refresh-mail', async (request) => {
       const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(Number(request.params.id));
