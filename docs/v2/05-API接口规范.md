@@ -293,6 +293,12 @@
 ```
 
 ### POST /api/v1/sub2api/monitor — `{ "enabled": true, ...可同时改 monitor 配置字段 }` → 监控视图
+
+```jsonc
+// 自动补号挑号顺序（monitor 字段，取值同 accounts 接口的 order 枚举）：
+//   replenish_upload_order：主池库存上传 sub2api 的挑号顺序，默认 balance_asc（余额小优先）
+//   replenish_join_order：备用池登录补入主号池的挑号顺序，默认 balance_desc（有余额、金额大优先）
+```
 ### POST /api/v1/sub2api/monitor/check → `202 { "ok": true }`（手动触发一轮，结果轮询 monitor 视图）
 
 ## 6. 设置（settings）

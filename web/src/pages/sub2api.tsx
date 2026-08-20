@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { sub2apiApi } from '@/api';
 import { errorMessage } from '@/api/client';
 import type { Sub2ApiMonitorLog, Sub2ApiMonitorLogItem, Sub2ApiProxyReplaceResult } from '@/api/types';
+import { UPLOAD_ORDER_OPTIONS } from '@/components/upload-order-select';
 import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { Button } from '@/components/ui/button';
@@ -142,6 +143,8 @@ export function Sub2ApiPage() {
   const [autoRepair, setAutoRepair] = useState(true);
   const [maxRepair, setMaxRepair] = useState('2');
   const [autoReplenish, setAutoReplenish] = useState(false);
+  const [replenishUploadOrder, setReplenishUploadOrder] = useState('balance_asc');
+  const [replenishJoinOrder, setReplenishJoinOrder] = useState('balance_desc');
   const [reserveThreshold, setReserveThreshold] = useState('10');
   const [cooldownMin, setCooldownMin] = useState('5');
   const [rateLimitThreshold, setRateLimitThreshold] = useState('12');
@@ -156,6 +159,8 @@ export function Sub2ApiPage() {
       setAutoRepair(m.auto_repair !== false);
       setMaxRepair(String(m.max_repair_attempts ?? 2));
       setAutoReplenish(Boolean(m.auto_replenish));
+      setReplenishUploadOrder(m.replenish_upload_order ?? 'balance_asc');
+      setReplenishJoinOrder(m.replenish_join_order ?? 'balance_desc');
       setReserveThreshold(String(m.reserve_threshold ?? 10));
       setCooldownMin(String(m.cooldown_minutes ?? 5));
       setRateLimitThreshold(String(m.rate_limit_reset_threshold_hours ?? 12));
@@ -172,6 +177,8 @@ export function Sub2ApiPage() {
     max_repair_attempts: Number(maxRepair) || 2,
     auto_replenish: autoReplenish,
     reserve_threshold: Number(reserveThreshold) || 10,
+    replenish_upload_order: replenishUploadOrder,
+    replenish_join_order: replenishJoinOrder,
     pause_on_discard: true,
     rate_limit_reset_threshold_hours: Number(rateLimitThreshold) || 12,
     banned_patterns: bannedPatterns.split('\n').map((s) => s.trim()).filter(Boolean),
@@ -416,6 +423,42 @@ export function Sub2ApiPage() {
             <Switch checked={autoReplenish} onCheckedChange={setAutoReplenish} />
             低于保底自动补号：sub2api 缺号优先上传主池库存，主池库存低于保底再从备用池登录补入
           </label>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>上传顺序（主池库存 → sub2api）</Label>
+              <Select value={replenishUploadOrder} onValueChange={setReplenishUploadOrder}>
+                <SelectTrigger className="w-full" aria-label="补号上传顺序">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {UPLOAD_ORDER_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>补号顺序（备用池 → 主号池）</Label>
+              <Select value={replenishJoinOrder} onValueChange={setReplenishJoinOrder}>
+                <SelectTrigger className="w-full" aria-label="补号登录顺序">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {UPLOAD_ORDER_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
           <details className="rounded-md border p-3">
             <summary className="cursor-pointer text-sm text-muted-foreground">分类正则（高级）</summary>
             <div className="mt-3 grid gap-3 md:grid-cols-2">

@@ -69,7 +69,14 @@ function remoteAccount({ id, email, status = 'active', rateLimitedAt = null, res
   };
 }
 
-function buildMonitor({ threshold = 10, remoteAccounts = [], autoRepair = false, bannedPatterns = ['401'], banMailCheck = null } = {}) {
+function buildMonitor({
+  threshold = 10,
+  remoteAccounts = [],
+  autoRepair = false,
+  bannedPatterns = ['401'],
+  banMailCheck = null,
+  monitorConfig: monitorOverrides = {},
+} = {}) {
   const client = {
     listAllOpenAiAccounts: async () => remoteAccounts,
     accountEmail: (account) => account?.credentials?.email || null,
@@ -97,6 +104,7 @@ function buildMonitor({ threshold = 10, remoteAccounts = [], autoRepair = false,
       reserve_threshold: threshold,
       banned_patterns: bannedPatterns,
       rate_limit_patterns: ['429', 'rate limit'],
+      ...monitorOverrides,
     },
   });
   return createMonitor({
@@ -463,4 +471,70 @@ test('级联补号：远端已存在的主池号不重复上传', async () => {
   assert.equal(view.last_result.uploaded, 1);
   assert.deepEqual(ctx.uploads[0].ids, [freshId]);
   assert.equal(view.last_result.replenished, 0);
+});
+
+// ---- 自动补号挑号顺序（replenish_upload_order / replenish_join_order） ----
+
+test('补号上传顺序：默认余额小优先，可改为金额从大到小', async () => {
+  for (const [email, balance] of [
+    ['s5@test.local', 5],
+    ['s60@test.local', 60],
+    ['s12@test.local', 12],
+  ]) {
+    insertAccount(ctx.db, ctx.crypto, { email, balance, tokens: { refresh_token: 't' } });
+  }
+  const emailOf = (id) => ctx.db.prepare('SELECT email FROM accounts WHERE id=?').get(id).email;
+
+  const asc = buildMonitor({ threshold: 3, remoteAccounts: [] });
+  await asc.runCheck();
+  assert.equal(ctx.uploads.length, 1);
+  assert.deepEqual(ctx.uploads[0].ids.map(emailOf), ['s5@test.local', 's12@test.local', 's60@test.local']);
+
+  ctx.uploads.length = 0;
+  const desc = buildMonitor({ threshold: 3, remoteAccounts: [], monitorConfig: { replenish_upload_order: 'balance_desc' } });
+  await desc.runCheck();
+  assert.deepEqual(ctx.uploads[0].ids.map(emailOf), ['s60@test.local', 's12@test.local', 's5@test.local']);
+});
+
+test('补号登录顺序：replenish_join_order=time_desc 按加入时间新优先', async () => {
+  const rows = [
+    ['old@test.local', '2026-08-01T00:00:00.000Z'],
+    ['mid@test.local', '2026-08-10T00:00:00.000Z'],
+    ['new@test.local', '2026-08-19T00:00:00.000Z'],
+  ];
+  for (const [email] of rows) insertAccount(ctx.db, ctx.crypto, { email, pool: 'reserve', status: 'mail_ok' });
+  const update = ctx.db.prepare('UPDATE accounts SET imported_at=? WHERE email=?');
+  for (const [email, importedAt] of rows) update.run(importedAt, email);
+
+  const monitor = buildMonitor({ threshold: 3, remoteAccounts: [], monitorConfig: { replenish_join_order: 'time_desc' } });
+  await monitor.runCheck();
+
+  assert.equal(ctx.submitted.length, 3);
+  const emailOf = (id) => ctx.db.prepare('SELECT email FROM accounts WHERE id=?').get(id).email;
+  assert.deepEqual(ctx.submitted.map((job) => emailOf(job.accountId)), [
+    'new@test.local',
+    'mid@test.local',
+    'old@test.local',
+  ]);
+});
+
+test('补号登录顺序：time_asc 按加入时间早优先', async () => {
+  const rows = [
+    ['old@test.local', '2026-08-01T00:00:00.000Z'],
+    ['mid@test.local', '2026-08-10T00:00:00.000Z'],
+    ['new@test.local', '2026-08-19T00:00:00.000Z'],
+  ];
+  for (const [email] of rows) insertAccount(ctx.db, ctx.crypto, { email, pool: 'reserve', status: 'mail_ok' });
+  const update = ctx.db.prepare('UPDATE accounts SET imported_at=? WHERE email=?');
+  for (const [email, importedAt] of rows) update.run(importedAt, email);
+
+  const monitor = buildMonitor({ threshold: 3, remoteAccounts: [], monitorConfig: { replenish_join_order: 'time_asc' } });
+  await monitor.runCheck();
+
+  const emailOf = (id) => ctx.db.prepare('SELECT email FROM accounts WHERE id=?').get(id).email;
+  assert.deepEqual(ctx.submitted.map((job) => emailOf(job.accountId)), [
+    'old@test.local',
+    'mid@test.local',
+    'new@test.local',
+  ]);
 });

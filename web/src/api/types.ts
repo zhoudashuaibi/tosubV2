@@ -179,6 +179,10 @@ export interface Sub2ApiMonitorConfig {
   max_repair_attempts: number;
   auto_replenish: boolean;
   reserve_threshold: number;
+  /** 自动补号挑号顺序：主池库存上传（默认 balance_asc 余额小优先） */
+  replenish_upload_order?: UploadOrder;
+  /** 自动补号挑号顺序：备用池登录补入（默认 balance_desc 金额大优先） */
+  replenish_join_order?: UploadOrder;
   pause_on_discard?: boolean;
   rate_limit_reset_threshold_hours?: number;
   banned_patterns: string[];

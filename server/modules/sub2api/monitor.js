@@ -1,4 +1,5 @@
 import { sanitizeText } from '../../lib/sanitize.js';
+import { uploadOrderExpr } from '../../lib/upload-order.js';
 
 /**
  * sub2api 监控巡检（默认 5 分钟一轮）：
@@ -10,8 +11,9 @@ import { sanitizeText } from '../../lib/sanitize.js';
  *  - 封禁关键词（deactivated/banned/suspended 等）→ 必须邮箱辅证证实才移废弃池；
  *    未证实只暂停远端调度保留观察，绝不凭远端一句错误信息直接废弃
  *  - 自动补号（同一保底阈值双重约束）：sub2api 可用数（本地主池 × 远端非 error/非限流 + 在途 joining）
- *    低于阈值 → 先从主池库存（未上传 sub2api 的 active 号，余额小优先）直接上传补缺口；
- *    主池库存（扣除本轮上传 + 在途登录）低于同一阈值 → 从备用池登录补入主池（每轮最多 3 个），下轮按需上传
+ *    低于阈值 → 先从主池库存（未上传 sub2api 的 active 号，按 replenish_upload_order 排序）直接上传补缺口；
+ *    主池库存（扣除本轮上传 + 在途登录）低于同一阈值 → 从备用池按 replenish_join_order 排序登录补入主池
+ *    （每轮最多 3 个），下轮按需上传
  * 单实例互斥；每轮结果与每账号动作写 monitor_logs，保留最近 100 轮。
  */
 
@@ -64,6 +66,8 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
       max_repair_attempts: config.max_repair_attempts ?? 2,
       auto_replenish: Boolean(config.auto_replenish),
       reserve_threshold: config.reserve_threshold ?? 10,
+      replenish_upload_order: config.replenish_upload_order ?? 'balance_asc',
+      replenish_join_order: config.replenish_join_order ?? 'balance_desc',
       rate_limit_reset_threshold_hours: config.rate_limit_reset_threshold_hours ?? 12,
       // 设置页回显用：不回显会导致保存时把这些字段覆盖成空
       pause_on_discard: config.pause_on_discard !== false,
@@ -462,12 +466,12 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
              AND NOT EXISTS (
                SELECT 1 FROM jobs j WHERE j.account_id=a.id AND j.status IN ('queued','running','awaiting_input')
              )
-           ORDER BY COALESCE(a.balance, a.initial_balance, 0) ASC, a.imported_at ASC`,
+           ORDER BY ${uploadOrderExpr(monitor.replenish_upload_order ?? 'balance_asc', 'main')}, a.id ASC`,
         )
         .all()
         .filter((row) => !remoteByEmail.has(String(row.email || '').toLowerCase()));
 
-      // 第一段：sub2api 缺口 → 直接上传主池库存补足（余额小优先）
+      // 第一段：sub2api 缺口 → 直接上传主池库存补足（按配置顺序挑号，默认余额小优先）
       let uploaded = 0;
       const gap = threshold - available;
       if (gap > 0 && stock.length && uploader) {
@@ -508,10 +512,14 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
       let replenished = 0;
       const remainingStock = Math.max(0, stock.length - uploaded) + joining;
       if (remainingStock < threshold) {
+        // 按金额排序时保留 has_balance 优先（余额未知的排最后），默认金额大优先
+        const joinOrder = monitor.replenish_join_order ?? 'balance_desc';
+        const balancePrefix = String(joinOrder).startsWith('time') ? '' : 'has_balance DESC, ';
         const candidates = db
           .prepare(
-            `SELECT id FROM accounts WHERE pool='reserve' AND banned=0 AND status IN ('mail_pending','mail_failed','mail_ok')
-             ORDER BY has_balance DESC, initial_balance DESC, imported_at ASC LIMIT ?`,
+            `SELECT a.id FROM accounts a WHERE a.pool='reserve' AND a.banned=0
+               AND a.status IN ('mail_pending','mail_failed','mail_ok')
+             ORDER BY ${balancePrefix}${uploadOrderExpr(joinOrder, 'reserve')}, a.id ASC LIMIT ?`,
           )
           .all(Math.min(3, threshold - remainingStock));
         for (const candidate of candidates) {

@@ -36,6 +36,9 @@ export const DEFAULT_SETTINGS = {
       max_repair_attempts: 2,
       auto_replenish: false,
       reserve_threshold: 10,
+      // 自动补号挑号顺序：主池库存上传（默认余额小优先）/ 备用池登录补入（默认金额大优先）
+      replenish_upload_order: 'balance_asc',
+      replenish_join_order: 'balance_desc',
       pause_on_discard: true,
       // 401 只代表会话过期（走自动修复：refresh 失败转完整登录），不得作为封禁特征
       banned_patterns: ['account_deactivated', 'deactivated', 'suspended', 'banned', 'permanently deleted'],

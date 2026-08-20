@@ -119,6 +119,7 @@ flowchart TD
 - **移废弃池的动作全部经过号池模块的事务函数**（04-04 §5.1），保证审计与状态一致。
 - 补号计数以**本地主池为准 × 远端实际状态**联合判断：已废弃但远端未删的号、他人上传的号、远端已删除的本地号都不计入；限流中（429）与 error（401）的号不计入；reserve 池在途 joining（有活跃任务）计入可用，防止在途期间重复触发。
 - 补号并发：单轮最多同时发起 `min(3, 空缺数)` 个 join，其余等下一轮（避免任务槽被补号占满）。
+- 补号挑号顺序可配置（取值同号池手动批量 `order` 枚举，04-04）：`replenish_upload_order` 主池库存上传顺序（默认 `balance_asc` 余额小优先）；`replenish_join_order` 备用池登录顺序（默认 `balance_desc` 有余额、金额大优先；按金额排序时余额未知的排最后）。
 - 巡检结果写 `account_events` 并在 `GET /api/v1/sub2api/monitor` 暴露 `last_check_at / next_check_at / last_error / last_result{discarded, repairing, replenished}`。
 
 ## 5. 配置与连通性
