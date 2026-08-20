@@ -5,7 +5,7 @@ import { Archive, Coins, Download, KeyRound, Loader2, Plus, RefreshCw, Search, T
 import { toast } from 'sonner';
 import { accountsApi, sub2apiApi } from '@/api';
 import { download, errorMessage } from '@/api/client';
-import type { MainAccount, Sub2ApiConfigView, UploadOptions } from '@/api/types';
+import type { MainAccount, Sub2ApiConfigView, UploadOptions, UploadOrder } from '@/api/types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -30,6 +30,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { UploadOrderSelect, useOrderPreference } from '@/components/upload-order-select';
 import { formatRelativeTime } from '@/lib/utils';
 
 export function MainPoolPage() {
@@ -104,7 +105,8 @@ export function MainPoolPage() {
   });
 
   const uploadMutation = useMutation({
-    mutationFn: ({ ids, options }: { ids: number[]; options?: UploadOptions }) => accountsApi.batchUpload(ids, options),
+    mutationFn: ({ ids, options, order }: { ids: number[]; options?: UploadOptions; order?: UploadOrder }) =>
+      accountsApi.batchUpload(ids, options, order),
     onSuccess: (result) => {
       toast.success(`上传完成：新增 ${result.created}，替换 ${result.updated}` + (result.failed.length ? `，失败 ${result.failed.length}` : ''));
       if (result.failed.length) {
@@ -333,7 +335,7 @@ export function MainPoolPage() {
         onOpenChange={setUploadOpen}
         count={selected.size}
         busy={uploadMutation.isPending}
-        onUpload={(options) => uploadMutation.mutate({ ids: selectedIds, options })}
+        onUpload={(options, order) => uploadMutation.mutate({ ids: selectedIds, options, order })}
       />
 
       <AddAccountDialog open={addOpen} onOpenChange={setAddOpen} />
@@ -371,7 +373,7 @@ function UploadConfigDialog({
   onOpenChange: (open: boolean) => void;
   count: number;
   busy: boolean;
-  onUpload: (options: UploadOptions) => void;
+  onUpload: (options: UploadOptions, order?: UploadOrder) => void;
 }) {
   const { data: config } = useQuery({
     queryKey: ['sub2api', 'config'],
@@ -402,6 +404,7 @@ function UploadConfigDialog({
   const [disable5h, setDisable5h] = useState(false);
   const [disable7d, setDisable7d] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [order, setOrder] = useOrderPreference('pools.mainUploadOrder');
 
   useEffect(() => {
     if (open && config && !loaded) {
@@ -461,6 +464,10 @@ function UploadConfigDialog({
                 </label>
               ))}
             </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>上传顺序</Label>
+            <UploadOrderSelect value={order} onValueChange={setOrder} size="default" />
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-1.5">
@@ -534,7 +541,7 @@ function UploadConfigDialog({
                 proxy_id: proxyId ? Number(proxyId) : null,
                 disable_auto_pause_5h: disable5h,
                 disable_auto_pause_7d: disable7d,
-              })
+              }, order || undefined)
             }
           >
             {busy && <Loader2 className="animate-spin" />}

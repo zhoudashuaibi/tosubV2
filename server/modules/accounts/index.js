@@ -35,6 +35,13 @@ const SORT_WHITELIST = {
   discard: { created_at: 'created_at', email: 'email', discarded_at: 'discarded_at' },
 };
 
+/**
+ * 手动批量「加入主号池 / 上传 sub2api」的可选顺序（docs 04-04）：
+ * balance_* 按金额（备用池=初始余额，主号池=实时余额，互为回退）；
+ * time_* 按加入号池时间（备用池=导入时间；主号池=首次 join_succeeded 事件时间，直入/导入的回退 created_at）。
+ */
+const UPLOAD_ORDERS = ['balance_desc', 'balance_asc', 'time_desc', 'time_asc'];
+
 export function createAccountsModule({ engine, logger }) {
   return async function accountsModule(app) {
     const db = app.db;
@@ -55,6 +62,23 @@ export function createAccountsModule({ engine, logger }) {
 
     const decryptCredentials = (account) =>
       crypto.tryDecryptJson(account?.credentials_enc, 'accounts.credentials_enc') || {};
+
+    /** 按 order 重排手动批量操作的 ids；金额=COALESCE(实时余额,初始余额)，时间=加入当前池的时间。 */
+    const orderIdsForUpload = (ids, order, pool) => {
+      if (!order || ids.length < 2) return ids;
+      const direction = order.endsWith('_desc') ? 'DESC' : 'ASC';
+      const key = order.startsWith('balance')
+        ? 'COALESCE(a.balance, a.initial_balance, 0)'
+        : pool === 'main'
+          ? `COALESCE((SELECT MIN(e.created_at) FROM account_events e WHERE e.account_id = a.id AND e.type = 'join_succeeded'), a.created_at)`
+          : 'COALESCE(a.imported_at, a.created_at)';
+      const placeholders = ids.map(() => '?').join(',');
+      const rows = db
+        .prepare(`SELECT a.id FROM accounts a WHERE a.id IN (${placeholders}) ORDER BY ${key} ${direction}, a.id ${direction}`)
+        .all(...ids);
+      const ordered = new Set(rows.map((row) => row.id));
+      return [...rows.map((row) => row.id), ...ids.filter((id) => !ordered.has(id))];
+    };
 
     // 引擎回调：登录任务终态 → 池流转
     engine.hooks.onLoginFinished = (job, account, { ok, code, message, canceled }) => {
@@ -787,6 +811,7 @@ export function createAccountsModule({ engine, logger }) {
             additionalProperties: false,
             properties: {
               ids: { type: 'array', items: { type: 'integer' }, maxItems: 500 },
+              order: { type: 'string', enum: UPLOAD_ORDERS },
             },
           },
         },
@@ -794,7 +819,8 @@ export function createAccountsModule({ engine, logger }) {
       async (request, reply) => {
         const started = [];
         const skipped = [];
-        for (const id of request.body.ids) {
+        const ids = orderIdsForUpload(request.body.ids, request.body.order, 'reserve');
+        for (const id of ids) {
           const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
           if (!account || account.pool !== 'reserve') {
             skipped.push({ id, reason: 'ACCOUNT_STATE_INVALID' });
@@ -943,13 +969,14 @@ export function createAccountsModule({ engine, logger }) {
             properties: {
               ids: { type: 'array', items: { type: 'integer' }, maxItems: 500 },
               options: { type: 'object' },
+              order: { type: 'string', enum: UPLOAD_ORDERS },
             },
           },
         },
       },
       async (request) => {
-        const { ids, options } = request.body;
-        const valid = ids.filter((id) => {
+        const { ids, options, order } = request.body;
+        const valid = orderIdsForUpload(ids, order, 'main').filter((id) => {
           const account = db.prepare('SELECT tokens_enc FROM accounts WHERE id = ? AND pool = ?').get(id, 'main');
           return Boolean(account?.tokens_enc);
         });

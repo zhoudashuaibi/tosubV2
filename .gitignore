@@ -9,3 +9,5 @@ gui-test-screenshots
 .DS_Store
 *.tsbuildinfo
 .zcode
+.agents
+.playwright-mcp

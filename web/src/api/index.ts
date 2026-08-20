@@ -20,6 +20,7 @@ import type {
   Sub2ApiProxyReplaceResult,
   Sub2ApiProxyView,
   UploadOptions,
+  UploadOrder,
 } from './types';
 
 // ---------- auth ----------
@@ -78,15 +79,17 @@ export const accountsApi = {
       method: 'PATCH',
       json: body,
     }),
-  joinMain: (ids: number[]) =>
-    api<{ started: number[]; skipped: { id: number; reason: string }[] }>('/accounts/join-main', { json: { ids } }),
+  joinMain: (ids: number[], order?: UploadOrder) =>
+    api<{ started: number[]; skipped: { id: number; reason: string }[] }>('/accounts/join-main', {
+      json: { ids, order },
+    }),
   batchAuthorize: (ids: number[]) =>
     api<{ started: number; skipped: { id: number; reason: string }[] }>('/accounts/batch-authorize', { json: { ids } }),
   batchRefreshBalance: (ids: number[]) => api<{ started: number }>('/accounts/batch-refresh-balance', { json: { ids } }),
-  batchUpload: (ids: number[], options?: UploadOptions) =>
+  batchUpload: (ids: number[], options?: UploadOptions, order?: UploadOrder) =>
     api<{ created: number; updated: number; failed: { id: number; email: string | null; error: string }[]; updated_account_ids: number[] }>(
       '/accounts/batch-upload-sub2api',
-      { json: { ids, options } },
+      { json: { ids, options, order } },
     ),
   batchDiscard: (ids: number[]) => api<{ discarded: number }>('/accounts/batch-discard', { json: { ids } }),
   restore: (id: number) => api<{ ok: boolean; status: string }>(`/accounts/${id}/restore`, { json: {} }),

@@ -21,6 +21,7 @@ import { ImportDialog } from '@/components/import-dialog';
 import { CredentialsEditDialog } from '@/components/credentials-edit-dialog';
 import { FilterSelect } from '@/components/filter-select';
 import { SortableHead, type SortState } from '@/components/sortable-head';
+import { UploadOrderSelect, useOrderPreference } from '@/components/upload-order-select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatRelativeTime } from '@/lib/utils';
 
@@ -36,6 +37,7 @@ export function ReservePoolPage() {
   const [forceRemote, setForceRemote] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [editAccount, setEditAccount] = useState<ReserveAccount | null>(null);
+  const [joinOrder, setJoinOrder] = useOrderPreference('pools.reserveJoinOrder');
 
   const { data, isLoading } = useQuery({
     queryKey: ['accounts', 'reserve', { q, statusFilter, sort }],
@@ -75,7 +77,7 @@ export function ReservePoolPage() {
   });
 
   const joinMutation = useMutation({
-    mutationFn: (ids: number[]) => accountsApi.joinMain(ids),
+    mutationFn: (ids: number[]) => accountsApi.joinMain(ids, joinOrder || undefined),
     onSuccess: (result) => {
       toast.success(`已发起 ${result.started.length} 个账号加入主号池`);
       for (const skip of result.skipped) toast.warning(`账号 ${skip.id} 跳过：${skip.reason}`);
@@ -298,6 +300,7 @@ export function ReservePoolPage() {
       </div>
 
       <BatchActionBar count={selected.size} onClear={() => setSelected(new Set())} extra={`合计余额 $${selectedBalance.toFixed(2)}`}>
+        <UploadOrderSelect value={joinOrder} onValueChange={setJoinOrder} />
         <Button size="sm" onClick={() => joinMutation.mutate(selectedIds)} disabled={joinMutation.isPending}>
           {joinMutation.isPending && <Loader2 className="animate-spin" />}
           批量加入主号池

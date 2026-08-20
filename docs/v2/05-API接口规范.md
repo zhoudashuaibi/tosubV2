@@ -161,7 +161,9 @@
 ### POST /api/v1/accounts/join-main
 
 ```jsonc
-// 请求 { "ids": [101, 102] }
+// 请求 { "ids": [101, 102], "order": "balance_desc" }
+//       order 可选：balance_desc|balance_asc 按金额（初始余额优先，回退实时余额），
+//                   time_desc|time_asc 按加入号池时间（导入时间）；省略 = 按传入顺序
 // 202 { "started": [101], "skipped": [{ "id": 102, "reason": "banned" }] }
 ```
 
@@ -184,6 +186,7 @@
 
 ```jsonc
 // 请求 { "ids": [201, 202],
+//        "order": "time_asc",   // 可选，同 join-main：金额/加入主号池时间升降序；省略 = 按传入顺序
 //        "options": { "disable_auto_pause_5h": true, "disable_auto_pause_7d": false,
 //                      "group_ids": [1], "concurrency": 10, "load_factor": 1, "priority": 1,
 //                      "auto_select_proxy": true, "proxy_id": null,

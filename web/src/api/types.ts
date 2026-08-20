@@ -168,6 +168,9 @@ export interface UploadOptions {
   proxy_id?: number | null;
 }
 
+/** 批量「加入主号池 / 上传 sub2api」顺序：按金额或加入号池时间，空 = 按勾选顺序 */
+export type UploadOrder = 'balance_desc' | 'balance_asc' | 'time_desc' | 'time_asc';
+
 export interface Sub2ApiMonitorConfig {
   enabled: boolean;
   interval_minutes: number;
