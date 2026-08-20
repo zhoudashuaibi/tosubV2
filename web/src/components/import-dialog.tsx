@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { CheckCircle2, AlertTriangle, XCircle, Loader2 } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { CheckCircle2, AlertTriangle, XCircle, Loader2, FileUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -47,15 +47,28 @@ export function ImportDialog({
   const [text, setText] = useState('');
   const [twofaText, setTwofaText] = useState('');
   const [passwordsText, setPasswordsText] = useState('');
+  const [fileName, setFileName] = useState('');
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) {
       setText('');
       setTwofaText('');
       setPasswordsText('');
+      setFileName('');
       onClosed?.();
     }
     onOpenChange(nextOpen);
+  };
+
+  const handleFileChosen = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      setText(await file.text());
+      setFileName(file.name);
+    } catch {
+      setFileName('');
+    }
   };
 
   return (
@@ -67,9 +80,31 @@ export function ImportDialog({
             {twofaPlaceholder ? '每行一条，支持以 # 开头的注释行；2FA 取件码与密码按邮箱自动关联' : '每行一条，支持以 # 开头的注释行'}
           </DialogDescription>
         </DialogHeader>
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-xs text-muted-foreground">
+            {fileName ? `已读取文件：${fileName}` : '可粘贴文本，或选择文件（如 tosubV2 导出的账号 JSON）'}
+          </div>
+          <Button type="button" variant="outline" size="sm" className="h-6 shrink-0" onClick={() => fileRef.current?.click()}>
+            <FileUp className="h-3.5 w-3.5" />
+            选择文件…
+          </Button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".json,.txt"
+            className="hidden"
+            onChange={(e) => {
+              handleFileChosen(e.target.files?.[0]);
+              e.target.value = '';
+            }}
+          />
+        </div>
         <Textarea
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            if (fileName) setFileName('');
+          }}
           placeholder={placeholder}
           className="min-h-[130px] font-mono text-xs"
           spellCheck={false}

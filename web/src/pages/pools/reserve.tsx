@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { Inbox, Loader2, Pencil, RefreshCw, Search, Trash2, Upload } from 'lucide-react';
+import { Inbox, Loader2, Pencil, RefreshCw, Search, Trash2, Upload, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { accountsApi } from '@/api';
-import { errorMessage } from '@/api/client';
+import { download, errorMessage } from '@/api/client';
 import type { ImportResult, ReserveAccount } from '@/api/types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -52,6 +52,7 @@ export function ReservePoolPage() {
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['accounts', 'reserve'] });
+    queryClient.invalidateQueries({ queryKey: ['accounts', 'main'] });
     queryClient.invalidateQueries({ queryKey: ['dashboard'] });
   };
 
@@ -60,7 +61,14 @@ export function ReservePoolPage() {
       accountsApi.import(text, twofaText, passwordsText, { force_discard: forceDiscard, force_remote: forceRemote }),
     onSuccess: (result) => {
       setImportResult(result);
-      if (result.created > 0) toast.success(`已开始 ${result.created} 个账号的邮件初始化，稍后刷新查看余额与状态`);
+      if (result.created > 0) {
+        const mainCount = result.main_created ?? 0;
+        const reserveCount = result.created - mainCount;
+        const parts = [];
+        if (mainCount > 0) parts.push(`${mainCount} 个账号直入主号池（含登录 tokens）`);
+        if (reserveCount > 0) parts.push(`${reserveCount} 个账号已开始邮件初始化`);
+        toast.success(parts.join('，'));
+      }
       invalidate();
     },
     onError: (error) => toast.error(errorMessage(error)),
@@ -149,6 +157,21 @@ export function ReservePoolPage() {
         >
           {refreshMailMutation.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}
           刷新邮件状态
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() =>
+            download(
+              selected.size > 0
+                ? `/accounts/export?ids=${selectedIds.join(',')}&format=tosub2`
+                : '/accounts/export?pool=reserve&format=tosub2',
+              'tosub2-accounts.json',
+            ).catch((error) => toast.error(errorMessage(error)))
+          }
+        >
+          <Download />
+          {selected.size > 0 ? `导出所选 (${selected.size})` : '导出账号'}
         </Button>
         <Button size="sm" onClick={() => { setImportResult(null); setForceDiscard(false); setForceRemote(false); setImportOpen(true); }}>
           <Upload />
@@ -279,6 +302,18 @@ export function ReservePoolPage() {
           {joinMutation.isPending && <Loader2 className="animate-spin" />}
           批量加入主号池
         </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() =>
+            download(`/accounts/export?ids=${selectedIds.join(',')}&format=tosub2`, 'tosub2-accounts.json').catch((error) =>
+              toast.error(errorMessage(error)),
+            )
+          }
+        >
+          <Download />
+          导出账号
+        </Button>
         <Button size="sm" variant="destructive" onClick={() => setDeleteOpen(true)}>
           批量删除
         </Button>
@@ -288,7 +323,7 @@ export function ReservePoolPage() {
         open={importOpen}
         onOpenChange={setImportOpen}
         title="导入 Outlook 邮箱"
-        placeholder={'邮箱----邮箱密码----clientId----refreshToken\n例：a@b.com----pass----9e5f94bc-e8a4-4e73-b8be-63364c29d753----M.C509_BL2...'}
+        placeholder={'邮箱----邮箱密码----clientId----refreshToken\n例：a@b.com----pass----9e5f94bc-e8a4-4e73-b8be-63364c29d753----M.C509_BL2...\n\n也可直接选择另一个 tosubV2 导出的账号 JSON 文件'}
         twofaPlaceholder={'邮箱----2FA取件码（只有开启两步验证的账号需要填）\n例：a@b.com----CBCLDAV22HRBZUDELLKNRPK4L3YJ25IQ'}
         passwordsPlaceholder={'ChatGPT 会话导出 JSON，密码在 meta.label 第 3 段；无密码账号可不管\n例：[{"meta":{"label":"a@b.com----xxxx----P@ssw0rd!"}}]'}
         result={importResult}

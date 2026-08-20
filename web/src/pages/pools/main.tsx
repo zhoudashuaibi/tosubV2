@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { Archive, Coins, KeyRound, Loader2, Plus, RefreshCw, Search, Trash2, Upload, Users } from 'lucide-react';
+import { Archive, Coins, Download, KeyRound, Loader2, Plus, RefreshCw, Search, Trash2, Upload, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import { accountsApi, sub2apiApi } from '@/api';
 import { download, errorMessage } from '@/api/client';
@@ -150,6 +150,21 @@ export function MainPoolPage() {
           <Plus />
           添加账号
         </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() =>
+            download(
+              selected.size > 0
+                ? `/accounts/export?ids=${selectedIds.join(',')}&format=tosub2`
+                : '/accounts/export?pool=main&format=tosub2',
+              'tosub2-accounts.json',
+            ).catch((error) => toast.error(errorMessage(error)))
+          }
+        >
+          <Download />
+          {selected.size > 0 ? `导出所选 (${selected.size})` : '导出账号'}
+        </Button>
       </div>
 
       <div className="rounded-lg border bg-card">
@@ -278,6 +293,18 @@ export function MainPoolPage() {
         <Button size="sm" variant="outline" onClick={() => balanceMutation.mutate(selectedIds)}>
           <Coins />
           批量获取余额
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() =>
+            download(`/accounts/export?ids=${selectedIds.join(',')}&format=tosub2`, 'tosub2-accounts.json').catch((error) =>
+              toast.error(errorMessage(error)),
+            )
+          }
+        >
+          <Download />
+          导出账号
         </Button>
         <Button
           size="sm"

@@ -104,16 +104,95 @@ export function parseTwofaLines(text) {
 }
 
 export function credentialsForImport(entry) {
-  const credentials = {
-    outlook: {
+  // 无 Outlook 取件凭据的条目（如仅有 2FA / ChatGPT 密码）不落空 outlook 对象
+  const credentials = {};
+  if (entry.password || entry.clientId || entry.refreshToken) {
+    credentials.outlook = {
       password: entry.password,
       client_id: entry.clientId,
       refresh_token: entry.refreshToken,
-    },
-  };
+    };
+  }
   if (entry.pickupCode) credentials.totp_pickup_code = entry.pickupCode;
   if (entry.chatgptPassword) credentials.password = entry.chatgptPassword;
+  if (entry.totpSecret) credentials.totp_secret = entry.totpSecret;
+  if (entry.phone) credentials.phone = entry.phone;
+  if (entry.mailApiUrl) credentials.mail_api_url = entry.mailApiUrl;
   return credentials;
+}
+
+/**
+ * tosub2 跨实例导出文件解析：与 buildTosub2ExportPayload 互逆。
+ * 返回 { ok, error, entries }；entries 与 parseImportLines 的 ok 行同构，
+ * 额外携带 note / banned / bannedReason / initialBalance / hasBalance 供建号时还原。
+ */
+export function parseTosub2Export(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return { ok: false, error: '内容为空', entries: [] };
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: '不是合法的 JSON 文件', entries: [] };
+  }
+  if (!data || data.type !== 'tosub2-accounts' || !Array.isArray(data.accounts)) {
+    return { ok: false, error: '不是 tosubV2 账号导出文件（缺少 type: tosub2-accounts）', entries: [] };
+  }
+
+  const entries = [];
+  const invalid = [];
+  const seenInBatch = new Map();
+  data.accounts.forEach((item, index) => {
+    const lineNo = index + 1;
+    const email = String(item?.email || '').trim().toLowerCase();
+    if (!EMAIL_PATTERN.test(email)) {
+      invalid.push({ line: lineNo, reason: `邮箱格式错误：${maskRaw(item?.email)}` });
+      return;
+    }
+    const c = item?.credentials && typeof item.credentials === 'object' ? item.credentials : {};
+    const outlook = c.outlook && typeof c.outlook === 'object' ? c.outlook : {};
+    // 带 OAuth tokens 的条目视为主号池账号，导入时直入主号池
+    const rawTokens = item?.tokens && typeof item.tokens === 'object' && !Array.isArray(item.tokens) ? item.tokens : null;
+    const tokens = rawTokens && (rawTokens.refresh_token || rawTokens.access_token) ? rawTokens : null;
+    const entry = {
+      email,
+      tokens,
+      mainStatus: tokens && item?.status === 'needs_reauth' ? 'needs_reauth' : 'active',
+      balance: Number.isFinite(item?.balance) ? Number(item.balance) : null,
+      lastLoginAt: typeof item?.last_login_at === 'string' ? item.last_login_at : null,
+      password: outlook.password || '',
+      clientId: outlook.client_id || '',
+      refreshToken: outlook.refresh_token || '',
+      pickupCode: c.totp_pickup_code || '',
+      totpSecret: c.totp_secret ? String(c.totp_secret).toUpperCase().replace(/[\s=]/g, '') : '',
+      chatgptPassword: c.password || '',
+      phone: c.phone || '',
+      mailApiUrl: c.mail_api_url || '',
+      note: typeof item.note === 'string' ? item.note.slice(0, 500) : '',
+      banned: Boolean(item.banned),
+      bannedReason: typeof item.banned_reason === 'string' ? item.banned_reason.slice(0, 500) : '',
+      initialBalance: Number.isFinite(item?.initial_balance) ? Number(item.initial_balance) : null,
+      hasBalance: item?.initial_balance != null && Number.isFinite(item?.initial_balance),
+    };
+    const hasAnyCredential =
+      entry.password || entry.clientId || entry.refreshToken || entry.pickupCode || entry.totpSecret || entry.chatgptPassword || entry.phone || entry.mailApiUrl;
+    if (!hasAnyCredential && !tokens) {
+      invalid.push({ line: lineNo, reason: `账号 ${email} 没有任何凭据字段` });
+      return;
+    }
+    if (entry.totpSecret && !/^[A-Z2-7]{16,128}$/.test(entry.totpSecret)) {
+      invalid.push({ line: lineNo, reason: `账号 ${email} 的 2FA 密钥不是合法 Base32` });
+      return;
+    }
+    if (seenInBatch.has(email)) {
+      invalid.push({ line: lineNo, reason: `与第 ${seenInBatch.get(email)} 个账号重复` });
+      return;
+    }
+    seenInBatch.set(email, lineNo);
+    entries.push(entry);
+  });
+
+  return { ok: true, error: null, entries, invalid };
 }
 
 /**

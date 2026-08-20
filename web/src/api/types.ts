@@ -112,7 +112,9 @@ export interface AccountCredentialsView {
 
 export interface ImportResult {
   created: number;
-  accounts?: { id: number; email: string; status: string }[];
+  /** 其中从 tosubV2 导出文件直入主号池（带 OAuth tokens）的数量 */
+  main_created?: number;
+  accounts?: { id: number; email: string; status: string; pool?: string }[];
   duplicates_in_batch: string[];
   duplicates_in_reserve: string[];
   duplicates_in_main: string[];

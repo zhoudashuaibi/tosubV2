@@ -3,7 +3,9 @@ import path from 'node:path';
 import { parsePagination } from '../../lib/db.js';
 import { errors } from '../../lib/http-errors.js';
 import { createPools } from './pools.js';
-import { parseImportLines, parseTwofaLines, parsePasswordFileText, credentialsForImport } from './import.js';
+import { parseImportLines, parseTwofaLines, parsePasswordFileText, parseTosub2Export, credentialsForImport } from './import.js';
+import { buildTosub2ExportPayload, tosub2ExportFilename } from './export.js';
+import { buildExportFromTokens } from '../sub2api/upload.js';
 import { createMailInit } from './mail-init.js';
 import { createBanMailCheck } from './ban-mail-check.js';
 import { sanitizeText } from '../../lib/sanitize.js';
@@ -299,7 +301,21 @@ export function createAccountsModule({ engine, logger }) {
         if (!String(text).trim() && !String(twofa_text).trim() && !String(passwords_text).trim()) {
           throw errors.validation('导入内容不能为空');
         }
-        const parsed = parseImportLines(text);
+        // tosubV2 导出文件（JSON 对象开头）走专用解析，字段比行格式更全（2FA 密钥/备注/封禁/余额）
+        let parsed;
+        let invalidLines;
+        let duplicatesInBatch;
+        if (String(text).trimStart().startsWith('{')) {
+          const tosub2 = parseTosub2Export(text);
+          if (!tosub2.ok) throw errors.validation(`tosubV2 导出文件解析失败：${tosub2.error}`);
+          parsed = tosub2.entries.map((entry) => ({ ok: true, ...entry }));
+          invalidLines = tosub2.invalid;
+          duplicatesInBatch = [];
+        } else {
+          parsed = parseImportLines(text);
+          invalidLines = parsed.filter((r) => !r.ok && !r.duplicateInBatch).map(({ line, reason }) => ({ line, reason }));
+          duplicatesInBatch = [...new Set(parsed.filter((r) => r.duplicateInBatch).map((r) => r.email))];
+        }
         const twofaParsed = parseTwofaLines(twofa_text);
         // 邮箱 -> 2FA 取件码；随导入逐个绑定并从 Map 移除，剩余的兜底关联到已有账号
         const twofaByEmail = new Map(twofaParsed.filter((r) => r.ok).map((r) => [r.email, r.pickupCode]));
@@ -309,8 +325,6 @@ export function createAccountsModule({ engine, logger }) {
         const passwordFile = parsePasswordFileText(passwords_text);
         const passwordByEmail = passwordFile.passwords;
         const passwordTotal = passwordByEmail.size;
-        const invalidLines = parsed.filter((r) => !r.ok && !r.duplicateInBatch).map(({ line, reason }) => ({ line, reason }));
-        const duplicatesInBatch = [...new Set(parsed.filter((r) => r.duplicateInBatch).map((r) => r.email))];
 
         const good = parsed.filter((r) => r.ok);
         const duplicatesInReserve = [];
@@ -331,13 +345,111 @@ export function createAccountsModule({ engine, logger }) {
           }
         }
 
+        // 主号池条目（tosubV2 文件带 OAuth tokens）入库：新号直插 main，
+        // 已有号刷新 tokens/凭据；备用池号升级进主号池（joining 中除外）
+        const importMainEntry = (entry, existing, now) => {
+          const tokensEnc = crypto.encryptJson(entry.tokens, 'accounts.tokens_enc');
+          // 同步维护账号级导出文件：refresh 任务（自动修复首选路径）的数据源，
+          // 缺失会让 refresh 直接失败退化成完整登录（见 engine.handleSaveTokens / launcher buildArgs）
+          const writeAccountExportFile = (accountId) => {
+            const exportPath = path.resolve(app.config.dataDir, 'results', `account-${accountId}.json`);
+            fs.mkdirSync(path.dirname(exportPath), { recursive: true });
+            fs.writeFileSync(exportPath, JSON.stringify(buildExportFromTokens({ id: accountId, email: entry.email }, entry.tokens), null, 2), { mode: 0o600 });
+          };
+          const mergeEncryptedCredentials = (accountId) => {
+            const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(accountId);
+            return crypto.encryptJson({ ...decryptCredentials(account), ...credentialsForImport(entry) }, 'accounts.credentials_enc');
+          };
+          if (!existing) {
+            const result = db
+              .prepare(
+                `INSERT INTO accounts(email, pool, status, note, credentials_enc, tokens_enc,
+                   balance, balance_checked_at, last_login_at, created_at, updated_at)
+                 VALUES(?, 'main', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(email) DO NOTHING`,
+              )
+              .run(
+                entry.email,
+                entry.mainStatus,
+                entry.note || null,
+                crypto.encryptJson(credentialsForImport(entry), 'accounts.credentials_enc'),
+                tokensEnc,
+                entry.balance,
+                entry.balance == null ? null : now,
+                entry.lastLoginAt || now,
+                now,
+                now,
+              );
+            if (result.changes === 0) return null;
+            const id = Number(result.lastInsertRowid);
+            pools.recordEvent(id, 'imported', { source: 'tosub2', pool: 'main' });
+            writeAccountExportFile(id);
+            return { id, email: entry.email, status: entry.mainStatus, pool: 'main' };
+          }
+          if (existing.pool === 'main') {
+            duplicatesInMain.push(entry.email);
+            db.prepare(
+              `UPDATE accounts SET tokens_enc=?, credentials_enc=?,
+                 balance=COALESCE(?, balance), balance_checked_at=COALESCE(?, balance_checked_at),
+                 last_login_at=COALESCE(?, last_login_at), updated_at=? WHERE id=?`,
+            ).run(tokensEnc, mergeEncryptedCredentials(existing.id), entry.balance, entry.balance == null ? null : now, entry.lastLoginAt, now, existing.id);
+            pools.recordEvent(existing.id, 'tokens_refreshed', { source: 'tosub2_import' });
+            writeAccountExportFile(existing.id);
+            return null;
+          }
+          if (existing.pool === 'reserve') {
+            const cas = db
+              .prepare(
+                `UPDATE accounts SET pool='main', status=?, tokens_enc=?, credentials_enc=?,
+                   balance=?, balance_checked_at=?, last_login_at=?, updated_at=?
+                 WHERE id=? AND pool='reserve' AND status != 'joining'`,
+              )
+              .run(entry.mainStatus, tokensEnc, mergeEncryptedCredentials(existing.id), entry.balance, entry.balance == null ? null : now, entry.lastLoginAt || now, now, existing.id);
+            if (cas.changes === 0) {
+              // 加入任务进行中：不换池，退化为刷新凭据（见下方 reserve 分支语义）
+              duplicatesInReserve.push(entry.email);
+              db.prepare('UPDATE accounts SET credentials_enc = ?, updated_at = ? WHERE id = ?').run(
+                mergeEncryptedCredentials(existing.id),
+                now,
+                existing.id,
+              );
+              return null;
+            }
+            pools.recordEvent(existing.id, 'join_succeeded', { source: 'tosub2_import' });
+            writeAccountExportFile(existing.id);
+            return { id: existing.id, email: entry.email, status: entry.mainStatus, pool: 'main' };
+          }
+          // discard
+          if (!force_discard) {
+            duplicatesInDiscard.push({ email: entry.email, reason: existing.discard_reason || 'manual' });
+            return null;
+          }
+          db.prepare(
+            `UPDATE accounts SET pool='main', status=?, tokens_enc=?, credentials_enc=?,
+               balance=?, balance_checked_at=?, last_login_at=?,
+               discard_reason=NULL, discard_detail=NULL, discarded_at=NULL,
+               banned=0, banned_reason=NULL, updated_at=? WHERE id=?`,
+          ).run(entry.mainStatus, tokensEnc, mergeEncryptedCredentials(existing.id), entry.balance, entry.balance == null ? null : now, entry.lastLoginAt || now, now, existing.id);
+          pools.recordEvent(existing.id, 'restored', { source: 'tosub2_import', to: 'main' });
+          writeAccountExportFile(existing.id);
+          return { id: existing.id, email: entry.email, status: entry.mainStatus, pool: 'main' };
+        };
+
         const insertTx = db.transaction(() => {
           for (const entry of good) {
-            entry.pickupCode = twofaByEmail.get(entry.email) || null;
-            entry.chatgptPassword = passwordByEmail.get(entry.email) || null;
+            // 显式粘贴的 2FA / 密码文本优先，否则保留 tosubV2 文件里已带的值
+            entry.pickupCode = twofaByEmail.get(entry.email) || entry.pickupCode || null;
+            entry.chatgptPassword = passwordByEmail.get(entry.email) || entry.chatgptPassword || null;
             const existing = db
-              .prepare('SELECT id, pool, discard_reason FROM accounts WHERE email = ? COLLATE NOCASE')
+              .prepare('SELECT id, pool, status, discard_reason FROM accounts WHERE email = ? COLLATE NOCASE')
               .get(entry.email);
+            if (entry.tokens) {
+              const imported = importMainEntry(entry, existing, new Date().toISOString());
+              if (imported) created.push(imported);
+              if (entry.pickupCode) twofaByEmail.delete(entry.email);
+              if (entry.chatgptPassword) passwordByEmail.delete(entry.email);
+              continue;
+            }
             if (existing) {
               if (existing.pool === 'reserve') {
                 duplicatesInReserve.push(entry.email);
@@ -369,14 +481,20 @@ export function createAccountsModule({ engine, logger }) {
                   duplicatesInDiscard.push({ email: entry.email, reason: existing.discard_reason || 'manual' });
                   continue;
                 }
-                // force：清废弃记录重新入备用池
+                // force：清废弃记录重新入备用池（tosubV2 文件带的封禁/余额元数据一并还原）
                 db.prepare(
                   `UPDATE accounts SET pool='reserve', status='mail_pending', credentials_enc=?,
+                     note=COALESCE(?, note), initial_balance=?, has_balance=?, banned=?, banned_reason=?,
                      discard_reason=NULL, discard_detail=NULL, discarded_at=NULL,
-                     banned=0, banned_reason=NULL, mail_status='pending', mail_error=NULL,
+                     mail_status='pending', mail_error=NULL,
                      imported_at=?, updated_at=? WHERE id=?`,
                 ).run(
                   crypto.encryptJson(credentialsForImport(entry), 'accounts.credentials_enc'),
+                  entry.note || null,
+                  entry.hasBalance ? entry.initialBalance : null,
+                  entry.hasBalance ? 1 : 0,
+                  entry.banned ? 1 : 0,
+                  entry.banned ? entry.bannedReason || '导入时标记为封禁' : null,
                   new Date().toISOString(),
                   new Date().toISOString(),
                   existing.id,
@@ -395,13 +513,22 @@ export function createAccountsModule({ engine, logger }) {
             const now = new Date().toISOString();
             const result = db
               .prepare(
-                `INSERT INTO accounts(email, pool, status, credentials_enc, mail_status, imported_at, created_at, updated_at)
-                 VALUES(?, 'reserve', 'mail_pending', ?, 'pending', ?, ?, ?)
+                `INSERT INTO accounts(email, pool, status, note, credentials_enc,
+                   initial_balance, has_balance, banned, banned_reason,
+                   mail_status, imported_at, created_at, updated_at)
+                 VALUES(?, 'reserve', 'mail_pending', ?, ?,
+                   ?, ?, ?, ?,
+                   'pending', ?, ?, ?)
                  ON CONFLICT(email) DO NOTHING`,
               )
               .run(
                 entry.email,
+                entry.note || null,
                 crypto.encryptJson(credentialsForImport(entry), 'accounts.credentials_enc'),
+                entry.hasBalance ? entry.initialBalance : null,
+                entry.hasBalance ? 1 : 0,
+                entry.banned ? 1 : 0,
+                entry.banned ? entry.bannedReason || '导入时标记为封禁' : null,
                 now,
                 now,
                 now,
@@ -430,12 +557,14 @@ export function createAccountsModule({ engine, logger }) {
           else passwordsUnmatched.push(email);
         }
 
-        // 异步邮件初始化
-        if (created.length) mailInit.enqueue(created.map((c) => c.id), { source: 'import' });
+        // 异步邮件初始化（主号池直入的账号不需要）
+        const reserveCreated = created.filter((c) => c.pool !== 'main');
+        if (reserveCreated.length) mailInit.enqueue(reserveCreated.map((c) => c.id), { source: 'import' });
 
         reply.code(201);
         return {
           created: created.length,
+          main_created: created.length - reserveCreated.length,
           accounts: created,
           duplicates_in_batch: duplicatesInBatch,
           duplicates_in_reserve: duplicatesInReserve,
@@ -910,9 +1039,29 @@ export function createAccountsModule({ engine, logger }) {
         .split(',')
         .map((v) => Number(v.trim()))
         .filter((v) => Number.isInteger(v) && v > 0);
-      if (!ids.length) throw errors.validation('ids 不能为空');
-      const placeholders = ids.map(() => '?').join(',');
-      const rows = db.prepare(`SELECT * FROM accounts WHERE id IN (${placeholders})`).all(...ids);
+      let rows;
+      if (ids.length) {
+        const placeholders = ids.map(() => '?').join(',');
+        rows = db.prepare(`SELECT * FROM accounts WHERE id IN (${placeholders})`).all(...ids);
+      } else if (['reserve', 'main'].includes(String(request.query.pool || ''))) {
+        // 整池导出（tosub2 跨实例迁移）
+        const pool = String(request.query.pool);
+        rows = db.prepare(`SELECT * FROM accounts WHERE pool=? ORDER BY id`).all(pool);
+      } else {
+        throw errors.validation('ids 不能为空');
+      }
+
+      if (format === 'tosub2') {
+        const payload = buildTosub2ExportPayload({
+          rows,
+          decryptCredentials,
+          decryptTokens: (row) =>
+            row.tokens_enc ? crypto.tryDecryptJson(row.tokens_enc, 'accounts.tokens_enc') : null,
+        });
+        reply.header('content-type', 'application/json; charset=utf-8');
+        reply.header('content-disposition', `attachment; filename="${tosub2ExportFilename()}"`);
+        return payload;
+      }
 
       if (format === 'source') {
         const lines = rows.map((row) => {

@@ -242,7 +242,7 @@ export function createUploader({ db, crypto, client, getConfig, dataDir, proxySe
   return { uploadAccounts };
 }
 
-function buildExportFromTokens(row, tokens) {
+export function buildExportFromTokens(row, tokens) {
   return {
     type: 'sub2api-data',
     version: 1,
