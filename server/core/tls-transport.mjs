@@ -10,7 +10,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const PROFILE_PROBE_TIMEOUT_MS = 15_000;
 const PROFILE_PROBE_TOTAL_TIMEOUT_MS = 300_000;
 const PROFILE_PROBE_CONCURRENCY = 4;
-const DEFAULT_SAME_PROXY_RISK_RETRIES = 3;
+const DEFAULT_SAME_PROXY_RISK_RETRIES = 5;
 const DEFAULT_SAME_PROXY_RISK_RETRY_DELAY_MS = 1_000;
 const UNCONFIGURED = Symbol("unconfigured");
 
@@ -114,9 +114,12 @@ export class TlsFingerprintTransport {
     if (canRotate && this.remainingProxySessionAttempts <= 0) {
       throw new Error("PROXY_RISK_CONTROL: 代理会话检测额度已用尽");
     }
-    const maxAttempts = 1;
+    // 非轮换代理可能由服务商端按连接换出口 IP（如 1024proxy Rotating），风控后保持同一代理重连即可换 IP
+    const maxAttempts = canRotate ? 1 : this.sameProxyRiskRetries + 1;
     if (!canRotate) {
-      console.log("[proxy] 未检测到可轮换的会话编号，仅检测当前代理 1 次");
+      console.log(
+        `[proxy] 未检测到可轮换的会话编号，同一代理最多检测 ${maxAttempts} 次（重连可能更换出口 IP）`,
+      );
     }
     let lastError = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -139,6 +142,11 @@ export class TlsFingerprintTransport {
         lastError = new Error(`HTTP ${response.status}${challenge ? "，返回安全校验页面" : ""}`);
         if (canRotate) {
           console.log(`[proxy] 本次代理检测失败：${lastError.message}，等待更换会话`);
+        } else if (attempt < maxAttempts) {
+          console.log(
+            `[proxy] 代理检测失败：${lastError.message}，保持同一代理重试 ${attempt}/${this.sameProxyRiskRetries}`,
+          );
+          await delay(this.sameProxyRiskRetryDelayMs);
         } else {
           console.log(`[proxy] 代理检测失败：${lastError.message}`);
         }
@@ -147,6 +155,11 @@ export class TlsFingerprintTransport {
         if (canRotate) {
           console.log(`[proxy] 本次代理连接失败：${redactProxyError(error.message)}，等待更换会话`);
           throw new Error(`PROXY_CONNECTION_RETRY: ${redactProxyError(error.message)}`);
+        } else if (attempt < maxAttempts) {
+          console.log(
+            `[proxy] 代理连接失败：${redactProxyError(error.message)}，保持同一代理重试 ${attempt}/${this.sameProxyRiskRetries}`,
+          );
+          await delay(this.sameProxyRiskRetryDelayMs);
         } else {
           console.log(`[proxy] 代理连接失败：${redactProxyError(error.message)}`);
         }
