@@ -173,6 +173,9 @@ export function createAccountsModule({ engine, logger }) {
           params.push(reason);
         }
       }
+      if (pool === 'main' && (request.query.uploaded === 'true' || request.query.uploaded === 'false')) {
+        filters.push(request.query.uploaded === 'true' ? 'sub2api_account_id IS NOT NULL' : 'sub2api_account_id IS NULL');
+      }
 
       const sortKey = String(request.query.sort || 'created_at').replace(/:(asc|desc)$/i, '');
       const sortDir = /:desc$/i.test(String(request.query.sort || '')) ? 'DESC' : 'ASC';

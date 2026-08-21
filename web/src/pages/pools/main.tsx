@@ -37,6 +37,7 @@ export function MainPoolPage() {
   const queryClient = useQueryClient();
   const [q, setQ] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [uploadedOnly, setUploadedOnly] = useState(false);
   const [sort, setSort] = useState<SortState | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -45,11 +46,12 @@ export function MainPoolPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['accounts', 'main', { q, statusFilter, sort }],
+    queryKey: ['accounts', 'main', { q, statusFilter, uploadedOnly, sort }],
     queryFn: () =>
       accountsApi.list<MainAccount>('main', {
         q: q || undefined,
         status: statusFilter || undefined,
+        uploaded: uploadedOnly ? 'true' : undefined,
         sort: sort ? `${sort.key}:${sort.dir}` : undefined,
         page_size: 200,
       }),
@@ -127,11 +129,50 @@ export function MainPoolPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="success">可用 {stats.active ?? 0}</Badge>
-        <Badge variant="info">授权中 {stats.authorizing ?? 0}</Badge>
-        <Badge variant="warning">待重授 {stats.needs_reauth ?? 0}</Badge>
+        {(
+          [
+            { value: 'active', label: '可用', variant: 'success' },
+            { value: 'authorizing', label: '授权中', variant: 'info' },
+            { value: 'needs_reauth', label: '待重授', variant: 'warning' },
+          ] as const
+        ).map((chip) => (
+          <button
+            key={chip.value}
+            type="button"
+            aria-pressed={statusFilter === chip.value}
+            className="cursor-pointer rounded-full focus-visible:outline-none"
+            onClick={() => setStatusFilter((prev) => (prev === chip.value ? '' : chip.value))}
+          >
+            <Badge
+              variant={chip.variant}
+              className={
+                statusFilter === chip.value
+                  ? 'ring-2 ring-primary ring-offset-2 ring-offset-background'
+                  : 'opacity-80 hover:opacity-100'
+              }
+            >
+              {chip.label} {stats[chip.value] ?? 0}
+            </Badge>
+          </button>
+        ))}
         <Badge variant="muted">总余额 ${(stats.total_balance ?? 0).toFixed?.(2) ?? stats.total_balance ?? '0.00'}</Badge>
-        <Badge variant="secondary">已上传 {stats.uploaded ?? 0}</Badge>
+        <button
+          type="button"
+          aria-pressed={uploadedOnly}
+          className="cursor-pointer rounded-full focus-visible:outline-none"
+          onClick={() => setUploadedOnly((prev) => !prev)}
+        >
+          <Badge
+            variant="secondary"
+            className={
+              uploadedOnly
+                ? 'ring-2 ring-primary ring-offset-2 ring-offset-background'
+                : 'opacity-80 hover:opacity-100'
+            }
+          >
+            已上传 {stats.uploaded ?? 0}
+          </Badge>
+        </button>
         <div className="flex-1" />
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -179,8 +220,12 @@ export function MainPoolPage() {
         ) : items.length === 0 ? (
           <EmptyState
             icon={Users}
-            title="主号池为空"
-            description="从备用号池「加入主号池」完成邮箱验证码登录，或手动添加账号"
+            title={statusFilter || uploadedOnly ? '没有符合条件的账号' : '主号池为空'}
+            description={
+              statusFilter || uploadedOnly
+                ? '换个条件试试，或点击当前高亮的徽章取消筛选'
+                : '从备用号池「加入主号池」完成邮箱验证码登录，或手动添加账号'
+            }
           />
         ) : (
           <Table>

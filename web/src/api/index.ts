@@ -60,6 +60,7 @@ export interface AccountFilter {
   banned?: string;
   has_balance?: string;
   reason?: string;
+  uploaded?: string;
   page?: number;
   page_size?: number;
   sort?: string;
