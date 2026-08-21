@@ -27,15 +27,24 @@ const REASON_LABELS: Record<string, string> = {
   manual: '手动废弃',
 };
 
+const REASON_CHIPS: Array<{ value: keyof typeof REASON_LABELS; variant: 'danger' | 'warning' | 'muted' }> = [
+  { value: 'banned_401', variant: 'danger' },
+  { value: 'rate_limited_429', variant: 'warning' },
+  { value: 'repair_failed', variant: 'warning' },
+  { value: 'login_failed', variant: 'danger' },
+  { value: 'manual', variant: 'muted' },
+];
+
 export function DiscardPoolPage() {
   const queryClient = useQueryClient();
   const [q, setQ] = useState('');
+  const [reason, setReason] = useState('');
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['accounts', 'discard', { q }],
-    queryFn: () => accountsApi.list<DiscardAccount>('discard', { q: q || undefined, page_size: 200 }),
+    queryKey: ['accounts', 'discard', { q, reason }],
+    queryFn: () => accountsApi.list<DiscardAccount>('discard', { q: q || undefined, reason: reason || undefined, page_size: 200 }),
     refetchInterval: 30_000,
     placeholderData: keepPreviousData,
   });
@@ -77,10 +86,26 @@ export function DiscardPoolPage() {
         移回主号池后账号为「待重新授权」状态，建议先批量授权再上传。
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="danger">封禁(401) {stats.banned_401 ?? 0}</Badge>
-        <Badge variant="warning">限流(429) {stats.rate_limited_429 ?? 0}</Badge>
-        <Badge variant="warning">修复失败 {stats.repair_failed ?? 0}</Badge>
-        <Badge variant="muted">手动废弃 {stats.manual ?? 0}</Badge>
+        {REASON_CHIPS.filter((chip) => chip.value !== 'login_failed' || (stats.login_failed ?? 0) > 0).map((chip) => (
+          <button
+            key={chip.value}
+            type="button"
+            aria-pressed={reason === chip.value}
+            className="cursor-pointer rounded-full focus-visible:outline-none"
+            onClick={() => setReason((prev) => (prev === chip.value ? '' : chip.value))}
+          >
+            <Badge
+              variant={chip.variant}
+              className={
+                reason === chip.value
+                  ? 'ring-2 ring-primary ring-offset-2 ring-offset-background'
+                  : 'opacity-80 hover:opacity-100'
+              }
+            >
+              {REASON_LABELS[chip.value]} {stats[chip.value] ?? 0}
+            </Badge>
+          </button>
+        ))}
         <div className="flex-1" />
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索邮箱…" className="w-56" />
       </div>
@@ -93,7 +118,15 @@ export function DiscardPoolPage() {
             ))}
           </div>
         ) : items.length === 0 ? (
-          <EmptyState icon={Archive} title="废弃号池为空" description="被 sub2api 监控判定 401/429 或手动废弃的账号会出现在这里" />
+          <EmptyState
+            icon={Archive}
+            title={reason ? `没有「${REASON_LABELS[reason] ?? reason}」的账号` : '废弃号池为空'}
+            description={
+              reason
+                ? '换个原因试试，或点击当前徽章取消筛选'
+                : '被 sub2api 监控判定 401/429 或手动废弃的账号会出现在这里'
+            }
+          />
         ) : (
           <Table>
             <TableHeader>

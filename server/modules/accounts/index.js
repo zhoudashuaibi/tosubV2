@@ -164,6 +164,15 @@ export function createAccountsModule({ engine, logger }) {
       if (request.query.banned === 'true' || request.query.banned === '1') filters.push('banned = 1');
       if (request.query.banned === 'false' || request.query.banned === '0') filters.push('banned = 0');
       if (request.query.has_balance === 'true') filters.push('has_balance = 1');
+      if (pool === 'discard' && request.query.reason) {
+        const reason = String(request.query.reason);
+        // 历史 NULL 归入 manual，与 poolStats 统计口径一致
+        if (reason === 'manual') filters.push("(discard_reason = 'manual' OR discard_reason IS NULL)");
+        else {
+          filters.push('discard_reason = ?');
+          params.push(reason);
+        }
+      }
 
       const sortKey = String(request.query.sort || 'created_at').replace(/:(asc|desc)$/i, '');
       const sortDir = /:desc$/i.test(String(request.query.sort || '')) ? 'DESC' : 'ASC';

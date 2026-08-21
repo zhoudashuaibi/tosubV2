@@ -59,6 +59,7 @@ export interface AccountFilter {
   status?: string;
   banned?: string;
   has_balance?: string;
+  reason?: string;
   page?: number;
   page_size?: number;
   sort?: string;
