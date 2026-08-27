@@ -143,7 +143,7 @@ export function Sub2ApiPage() {
   const [autoRepair, setAutoRepair] = useState(true);
   const [maxRepair, setMaxRepair] = useState('2');
   const [autoReplenish, setAutoReplenish] = useState(false);
-  const [refreshBalance, setRefreshBalance] = useState(true);
+  const [refreshBalance, setRefreshBalance] = useState(false);
   const [replenishUploadOrder, setReplenishUploadOrder] = useState('balance_asc');
   const [replenishJoinOrder, setReplenishJoinOrder] = useState('balance_desc');
   const [reserveThreshold, setReserveThreshold] = useState('10');
@@ -160,7 +160,7 @@ export function Sub2ApiPage() {
       setAutoRepair(m.auto_repair !== false);
       setMaxRepair(String(m.max_repair_attempts ?? 2));
       setAutoReplenish(Boolean(m.auto_replenish));
-      setRefreshBalance(m.refresh_balance !== false);
+      setRefreshBalance(Boolean(m.refresh_balance));
       setReplenishUploadOrder(m.replenish_upload_order ?? 'balance_asc');
       setReplenishJoinOrder(m.replenish_join_order ?? 'balance_desc');
       setReserveThreshold(String(m.reserve_threshold ?? 10));

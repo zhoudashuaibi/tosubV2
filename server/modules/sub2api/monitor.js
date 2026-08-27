@@ -5,7 +5,7 @@ import { uploadOrderExpr } from '../../lib/upload-order.js';
  * sub2api 监控巡检（默认 5 分钟一轮）：
  *  - 只监控 OAuth 授权号（本系统上传的 free 号，type=oauth）；API Key 号（plus/pro/team 等）完全忽略
  *  - 每轮同步远端状态：按 email/ID 回填 sub2api_account_id、镜像远端真实 status（主号池“远端状态”列）
- *  - 每轮刷新已上传号余额（refresh_balance，默认开）：走 balance 任务通道，选路优先 sub2api 绑定代理
+ *  - 每轮可选刷新已上传号余额（refresh_balance 配置项，默认关）：走 balance 任务通道，选路优先 sub2api 绑定代理
  *  - 拉全量监控分组账号 → error 账号分类（banned/rate_limit/临时错误）
  *  - OAuth 号限流不写 status=error，用 rate_limited_at 判定：重置时间超过阈值 → 移废弃池，否则保留观察
  *  - 401/会话过期 → 自动修复：有 refresh_token 先刷新（失败自动转完整登录），没有直接发完整登录；
@@ -67,7 +67,7 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
       auto_repair: config.auto_repair !== false,
       max_repair_attempts: config.max_repair_attempts ?? 2,
       auto_replenish: Boolean(config.auto_replenish),
-      refresh_balance: config.refresh_balance !== false,
+      refresh_balance: Boolean(config.refresh_balance),
       reserve_threshold: config.reserve_threshold ?? 10,
       replenish_upload_order: config.replenish_upload_order ?? 'balance_asc',
       replenish_join_order: config.replenish_join_order ?? 'balance_desc',
@@ -291,8 +291,9 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
         }
       }
 
-      // 巡检顺带刷新已上传号的余额：走 balance 任务通道并发消化，选路优先 sub2api 绑定代理
-      if (monitor.refresh_balance !== false) {
+      // 巡检可选刷新已上传号的余额（refresh_balance 配置项，默认关）：
+      // 走 balance 任务通道并发消化，选路优先 sub2api 绑定代理
+      if (monitor.refresh_balance) {
         let balanceQueued = 0;
         for (const { remote, local } of tracked) {
           if (client.accountRateLimit(remote).limited_now) continue; // 限流中的号不再打扰

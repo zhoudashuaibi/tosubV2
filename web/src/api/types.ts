@@ -178,7 +178,7 @@ export interface Sub2ApiMonitorConfig {
   auto_repair: boolean;
   max_repair_attempts: number;
   auto_replenish: boolean;
-  /** 巡检时顺带刷新已上传号的余额（默认开） */
+  /** 巡检时顺带刷新已上传号的余额（默认关，需显式开启） */
   refresh_balance?: boolean;
   reserve_threshold: number;
   /** 自动补号挑号顺序：主池库存上传（默认 balance_asc 余额小优先） */
