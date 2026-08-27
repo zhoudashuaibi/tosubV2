@@ -122,6 +122,7 @@ export const jobsApi = {
   cancel: (id: string) => api<{ job: Job }>(`/jobs/${id}/cancel`, { json: {} }),
   retry: (id: string, proxy_id?: number) => api<{ job: Job }>(`/jobs/${id}/retry`, { json: { proxy_id } }),
   cancelAll: () => api<{ canceled: number }>('/jobs/cancel-all', { json: {} }),
+  cleanup: (days: number) => api<{ deleted: number }>('/jobs/cleanup', { json: { days } }),
 };
 
 // ---------- sub2api ----------

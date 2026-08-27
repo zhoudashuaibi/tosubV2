@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { parsePagination } from '../../lib/db.js';
+import { cleanupFinishedJobs, parsePagination } from '../../lib/db.js';
 import { errors } from '../../lib/http-errors.js';
 
 export function createJobsModule({ engine }) {
@@ -43,8 +43,13 @@ export function createJobsModule({ engine }) {
       const filters = [];
       const params = [];
       if (request.query.status) {
-        filters.push('status = ?');
-        params.push(String(request.query.status));
+        // active 是前端聚合页签：排队/进行中/待输入
+        if (request.query.status === 'active') {
+          filters.push("status IN ('queued','running','awaiting_input')");
+        } else {
+          filters.push('status = ?');
+          params.push(String(request.query.status));
+        }
       }
       if (request.query.type) {
         filters.push('type = ?');
@@ -167,5 +172,26 @@ export function createJobsModule({ engine }) {
       const canceled = await engine.cancelAll();
       return { canceled };
     });
+
+    // 手动清理：删除 N 天前结束的终态任务（任务默认全量保留，不自动清理）
+    app.post(
+      '/api/v1/jobs/cleanup',
+      {
+        schema: {
+          body: {
+            type: 'object',
+            required: ['days'],
+            additionalProperties: false,
+            properties: {
+              days: { type: 'integer', minimum: 0, maximum: 3650 },
+            },
+          },
+        },
+      },
+      async (request) => {
+        const deleted = cleanupFinishedJobs(db, app.config.dataDir, request.body.days);
+        return { deleted };
+      },
+    );
   };
 }

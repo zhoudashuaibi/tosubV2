@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, ChevronRight, Download, ListChecks, Loader2, Send, RotateCcw, XCircle } from 'lucide-react';
+import { ChevronDown, ChevronRight, Download, ListChecks, Loader2, Send, RotateCcw, Trash2, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { jobsApi } from '@/api';
 import { download, errorMessage } from '@/api/client';
@@ -9,6 +9,7 @@ import type { Job } from '@/api/types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Skeleton } from '@/components/ui/skeleton';
 import { StatusBadge } from '@/components/status-badge';
@@ -17,6 +18,8 @@ import { EmptyState } from '@/components/empty-state';
 import { LogViewer } from '@/components/log-viewer';
 import { FilterSelect } from '@/components/filter-select';
 import { formatDateTime, formatRelativeTime } from '@/lib/utils';
+
+const PAGE_SIZE = 100;
 
 const TYPE_LABELS: Record<string, string> = {
   login: '登录',
@@ -30,26 +33,48 @@ export function JobsPage() {
   const [statusTab, setStatusTab] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [q, setQ] = useState('');
+  const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [cancelAllOpen, setCancelAllOpen] = useState(false);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [cleanupDays, setCleanupDays] = useState('30');
 
   const { data, isLoading } = useQuery({
-    queryKey: ['jobs', { statusTab, typeFilter, q }],
+    queryKey: ['jobs', { statusTab, typeFilter, q, page }],
     queryFn: () =>
       jobsApi.list({
         status: statusTab || undefined,
         type: typeFilter || undefined,
         q: q || undefined,
-        page_size: 100,
+        page,
+        page_size: PAGE_SIZE,
       }),
     refetchInterval: 2000,
     placeholderData: keepPreviousData,
   });
 
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  // 筛选/清理导致总页数缩小时，把当前页拉回范围内
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['jobs'] });
     queryClient.invalidateQueries({ queryKey: ['dashboard'] });
   };
+
+  const cleanupMutation = useMutation({
+    mutationFn: (days: number) => jobsApi.cleanup(days),
+    onSuccess: (result) => {
+      toast.success(result.deleted > 0 ? `已清理 ${result.deleted} 条任务` : '没有符合条件的任务');
+      setCleanupOpen(false);
+      setExpanded(null);
+      invalidate();
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
 
   const cancelMutation = useMutation({
     mutationFn: (id: string) => jobsApi.cancel(id),
@@ -89,10 +114,21 @@ export function JobsPage() {
         <Badge variant="info">进行中 {stats.running}</Badge>
         <Badge variant="warning">待输入 {stats.awaiting_input}</Badge>
         <div className="flex-1" />
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索邮箱…" className="h-6 w-48" />
+        <Input
+          value={q}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setPage(1);
+          }}
+          placeholder="搜索邮箱…"
+          className="h-6 w-48"
+        />
         <FilterSelect
           value={typeFilter}
-          onValueChange={setTypeFilter}
+          onValueChange={(value) => {
+            setTypeFilter(value);
+            setPage(1);
+          }}
           label="全部类型"
           className="w-[124px]"
           options={[
@@ -102,6 +138,10 @@ export function JobsPage() {
             { value: 'totp_setup', label: '2FA' },
           ]}
         />
+        <Button variant="outline" size="sm" onClick={() => setCleanupOpen(true)}>
+          <Trash2 />
+          清理
+        </Button>
         <Button variant="destructive" size="sm" onClick={() => setCancelAllOpen(true)}>
           <XCircle />
           取消全部
@@ -118,7 +158,10 @@ export function JobsPage() {
         ].map(([value, label]) => (
           <button
             key={value}
-            onClick={() => setStatusTab(value)}
+            onClick={() => {
+              setStatusTab(value);
+              setPage(1);
+            }}
             className={`-mb-px border-b-2 px-3 py-2 text-sm transition-colors ${
               statusTab === value
                 ? 'border-primary font-medium text-primary'
@@ -170,6 +213,21 @@ export function JobsPage() {
         )}
       </div>
 
+      <div className="flex items-center justify-between text-sm text-muted-foreground">
+        <span>共 {total} 条任务</span>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+            上一页
+          </Button>
+          <span>
+            第 {page} / {totalPages} 页
+          </span>
+          <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>
+            下一页
+          </Button>
+        </div>
+      </div>
+
       <ConfirmDialog
         open={cancelAllOpen}
         onOpenChange={setCancelAllOpen}
@@ -179,6 +237,40 @@ export function JobsPage() {
         busy={cancelAllMutation.isPending}
         onConfirm={() => cancelAllMutation.mutate()}
       />
+
+      <Dialog open={cleanupOpen} onOpenChange={setCleanupOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>清理历史任务</DialogTitle>
+            <DialogDescription>
+              任务默认全部保留。输入天数，早于该天数结束的任务（含日志与产物文件）将被删除，进行中的任务不受影响。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-3 px-1">
+            <span className="text-sm">清理</span>
+            <Input
+              type="number"
+              min={0}
+              value={cleanupDays}
+              onChange={(e) => setCleanupDays(e.target.value)}
+              className="w-24"
+            />
+            <span className="text-sm">天前结束的任务</span>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCleanupOpen(false)} disabled={cleanupMutation.isPending}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={cleanupMutation.isPending || cleanupDays.trim() === '' || Number(cleanupDays) < 0 || !Number.isInteger(Number(cleanupDays))}
+              onClick={() => cleanupMutation.mutate(Number(cleanupDays))}
+            >
+              {cleanupMutation.isPending ? '清理中…' : '清理'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

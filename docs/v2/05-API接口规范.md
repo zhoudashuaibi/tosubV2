@@ -253,6 +253,9 @@
 ### POST /api/v1/jobs/:id/cancel → `{ "job": {...} }`（终态任务 409）
 ### POST /api/v1/jobs/:id/retry — `{ "proxy_id": 5 }` 可选 → `202 { "job": {...} }`
 ### POST /api/v1/jobs/cancel-all → `{ "canceled": 5 }`
+### POST /api/v1/jobs/cleanup — `{ "days": 30 }` → `{ "deleted": 120 }`
+
+手动清理 N 天前结束的终态任务（连日志/产物文件）；任务默认全量保留，不做自动清理。`days` 取值 0-3650。`GET /api/v1/jobs` 的 `status=active` 为聚合页签（= queued/running/awaiting_input）。
 
 ## 5. sub2api
 

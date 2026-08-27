@@ -39,13 +39,13 @@ export function openDatabase(dataDir, { logger = null } = {}) {
   return db;
 }
 
-/** 终态任务保留 N 天，启动时清理。 */
+/** 清理 N 天前的终态任务（连日志/产物文件），任务全量保留、仅由手动清理接口触发。 */
 export function cleanupFinishedJobs(db, dataDir, retentionDays = 30, logger = null) {
   const cutoff = new Date(Date.now() - retentionDays * 24 * 3600 * 1000).toISOString();
   const rows = db
     .prepare(
       `SELECT id, log_path, result_path FROM jobs
-       WHERE status IN ('completed','failed','canceled') AND finished_at IS NOT NULL AND finished_at < ?`,
+       WHERE status IN ('completed','failed','canceled') AND COALESCE(finished_at, updated_at, created_at) < ?`,
     )
     .all(cutoff);
   if (!rows.length) return 0;

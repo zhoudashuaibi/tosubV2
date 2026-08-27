@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import Fastify from 'fastify';
 import fp from 'fastify-plugin';
 import { loadConfig } from './lib/config.js';
-import { openDatabase, cleanupFinishedJobs } from './lib/db.js';
+import { openDatabase } from './lib/db.js';
 import { createCrypto } from './lib/crypto.js';
 import { createLogger } from './lib/logger.js';
 import { createSettingsService } from './lib/settings.js';
@@ -29,7 +29,6 @@ const db = openDatabase(config.dataDir, { logger });
 const crypto = createCrypto({ dataDir: config.dataDir, secretKeyEnv: config.secretKeyEnv, logger });
 const settings = createSettingsService(db, crypto, { logger });
 settings.ensureDefaults();
-cleanupFinishedJobs(db, config.dataDir, 30, logger);
 
 // ---- 任务引擎（在装饰器注册前创建，注入选路/凭据封面） ----
 const engineConfig = {
