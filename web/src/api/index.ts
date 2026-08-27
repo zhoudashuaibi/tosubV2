@@ -62,6 +62,7 @@ export interface AccountFilter {
   has_balance?: string;
   reason?: string;
   uploaded?: string;
+  remote_status?: string;
   page?: number;
   page_size?: number;
   sort?: string;

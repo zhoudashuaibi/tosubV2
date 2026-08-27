@@ -182,6 +182,15 @@ export function createAccountsModule({ engine, logger }) {
       if (pool === 'main' && (request.query.uploaded === 'true' || request.query.uploaded === 'false')) {
         filters.push(request.query.uploaded === 'true' ? 'sub2api_account_id IS NOT NULL' : 'sub2api_account_id IS NULL');
       }
+      // 远端状态筛选与列表展示口径一致：远端镜像 status 优先，未同步回退本地登录状态
+      if (pool === 'main' && request.query.remote_status) {
+        const remoteStatus = String(request.query.remote_status);
+        if (remoteStatus === 'not_uploaded') filters.push('sub2api_account_id IS NULL');
+        else if (remoteStatus === 'active')
+          filters.push("sub2api_account_id IS NOT NULL AND COALESCE(sub2api_status, status) = 'active'");
+        else if (remoteStatus === 'abnormal')
+          filters.push("sub2api_account_id IS NOT NULL AND COALESCE(sub2api_status, status) != 'active'");
+      }
 
       const sortKey = String(request.query.sort || 'created_at').replace(/:(asc|desc)$/i, '');
       const sortDir = /:desc$/i.test(String(request.query.sort || '')) ? 'DESC' : 'ASC';

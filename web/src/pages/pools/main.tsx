@@ -37,6 +37,7 @@ export function MainPoolPage() {
   const queryClient = useQueryClient();
   const [q, setQ] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [remoteFilter, setRemoteFilter] = useState('');
   const [uploadedOnly, setUploadedOnly] = useState(false);
   const [sort, setSort] = useState<SortState | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -46,11 +47,12 @@ export function MainPoolPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['accounts', 'main', { q, statusFilter, uploadedOnly, sort }],
+    queryKey: ['accounts', 'main', { q, statusFilter, remoteFilter, uploadedOnly, sort }],
     queryFn: () =>
       accountsApi.list<MainAccount>('main', {
         q: q || undefined,
         status: statusFilter || undefined,
+        remote_status: remoteFilter || undefined,
         uploaded: uploadedOnly ? 'true' : undefined,
         sort: sort ? `${sort.key}:${sort.dir}` : undefined,
         page_size: 200,
@@ -200,6 +202,17 @@ export function MainPoolPage() {
             { value: 'needs_reauth', label: '待重新授权' },
           ]}
         />
+        <FilterSelect
+          value={remoteFilter}
+          onValueChange={setRemoteFilter}
+          label="全部远端"
+          className="w-[132px]"
+          options={[
+            { value: 'active', label: '远端可用' },
+            { value: 'abnormal', label: '远端异常' },
+            { value: 'not_uploaded', label: '未上传' },
+          ]}
+        />
         <Button
           variant="outline"
           size="sm"
@@ -240,9 +253,9 @@ export function MainPoolPage() {
         ) : items.length === 0 ? (
           <EmptyState
             icon={Users}
-            title={statusFilter || uploadedOnly ? '没有符合条件的账号' : '主号池为空'}
+            title={statusFilter || remoteFilter || uploadedOnly ? '没有符合条件的账号' : '主号池为空'}
             description={
-              statusFilter || uploadedOnly
+              statusFilter || remoteFilter || uploadedOnly
                 ? '换个条件试试，或点击当前高亮的徽章取消筛选'
                 : '从备用号池「加入主号池」完成邮箱验证码登录，或手动添加账号'
             }
