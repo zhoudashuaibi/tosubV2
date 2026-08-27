@@ -52,6 +52,13 @@ export function createJobsEngine({ config, db, logger }) {
     return running.get(jobId);
   }
 
+  /** 选路等引擎侧信息追加到任务日志（任务详情页可见）。 */
+  function appendJobLog(job, line) {
+    try {
+      fs.appendFileSync(path.resolve(config.dataDir, job.log_path), `[engine] ${line}\n`);
+    } catch {}
+  }
+
   // ------------------------------------------------------------------
   // 创建任务（与账号状态 CAS 同事务）
   // ------------------------------------------------------------------
@@ -178,6 +185,9 @@ export function createJobsEngine({ config, db, logger }) {
         logger.warn({ jobId: job.id, err: error.message }, 'resolve sub2api-bound proxy failed');
       }
       if (remoteRoute?.url) {
+        const label = `sub2api 代理 #${remoteRoute.proxy_id}${remoteRoute.proxy_name ? ` (${remoteRoute.proxy_name})` : ''}`;
+        patchJob(job.id, { proxy_label: label });
+        appendJobLog(job, `balance via sub2api-bound proxy: ${label}, remote_account=${remoteRoute.remote_id}`);
         logger.info(
           { jobId: job.id, remoteAccountId: remoteRoute.remote_id, proxy: remoteRoute.proxy_name },
           'balance job via sub2api-bound proxy',
@@ -207,7 +217,9 @@ export function createJobsEngine({ config, db, logger }) {
     const excludeIds = [];
     for (let attempt = 1; ; attempt += 1) {
       const proxy = selectProxyForJob(job, credentials, excludeIds);
-      patchJob(job.id, { proxy_id: proxy.id });
+      // 重试等场景可能残留 sub2api 标签：本机选路一律覆盖为空
+      patchJob(job.id, { proxy_id: proxy.id, proxy_label: null });
+      appendJobLog(job, `balance ${proxy.url ? `via local proxy #${proxy.id ?? '?'}` : 'direct (no local proxy)'}`);
       logger.info({ jobId: job.id, attempt, proxyId: proxy.id }, `balance job ${proxy.url ? 'via proxy' : 'direct'}`);
 
       let result;

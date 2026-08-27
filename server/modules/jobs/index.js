@@ -25,7 +25,8 @@ export function createJobsModule({ engine }) {
         prompt_kind: row.prompt_kind,
         attempt: row.attempt,
         proxy_id: row.proxy_id,
-        proxy_display: proxy?.display_url ?? null,
+        // 本机代理（proxy_id join）优先；余额任务走 sub2api 绑定代理时记录在 proxy_label
+        proxy_display: proxy?.display_url ?? row.proxy_label ?? null,
         error: row.error,
         created_at: row.created_at,
         started_at: row.started_at,
