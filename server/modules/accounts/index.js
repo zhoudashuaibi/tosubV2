@@ -192,9 +192,12 @@ export function createAccountsModule({ engine, logger }) {
           filters.push("sub2api_account_id IS NOT NULL AND COALESCE(sub2api_status, status) != 'active'");
       }
 
-      const sortKey = String(request.query.sort || 'created_at').replace(/:(asc|desc)$/i, '');
-      const sortDir = /:desc$/i.test(String(request.query.sort || '')) ? 'DESC' : 'ASC';
-      const sortColumn = SORT_WHITELIST[pool][sortKey] || 'created_at';
+      // 废弃号池默认按废弃时间倒序（最新废弃在前）；其余池默认创建时间正序
+      const defaultSort = pool === 'discard' ? 'discarded_at:desc' : 'created_at';
+      const sortParam = String(request.query.sort || defaultSort);
+      const sortKey = sortParam.replace(/:(asc|desc)$/i, '');
+      const sortDir = /:desc$/i.test(sortParam) ? 'DESC' : 'ASC';
+      const sortColumn = SORT_WHITELIST[pool][sortKey] || defaultSort.replace(/:(asc|desc)$/i, '');
 
       const where = `WHERE ${filters.join(' AND ')}`;
       const total = db.prepare(`SELECT COUNT(*) AS n FROM accounts ${where}`).get(...params).n;

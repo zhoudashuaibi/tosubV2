@@ -16,6 +16,7 @@ import { StatusBadge } from '@/components/status-badge';
 import { BatchActionBar } from '@/components/batch-action-bar';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { EmptyState } from '@/components/empty-state';
+import { SortableHead, type SortState } from '@/components/sortable-head';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatRelativeTime } from '@/lib/utils';
 
@@ -39,12 +40,19 @@ export function DiscardPoolPage() {
   const queryClient = useQueryClient();
   const [q, setQ] = useState('');
   const [reason, setReason] = useState('');
+  const [sort, setSort] = useState<SortState | null>({ key: 'discarded_at', dir: 'desc' });
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['accounts', 'discard', { q, reason }],
-    queryFn: () => accountsApi.list<DiscardAccount>('discard', { q: q || undefined, reason: reason || undefined, page_size: 200 }),
+    queryKey: ['accounts', 'discard', { q, reason, sort }],
+    queryFn: () =>
+      accountsApi.list<DiscardAccount>('discard', {
+        q: q || undefined,
+        reason: reason || undefined,
+        sort: sort ? `${sort.key}:${sort.dir}` : undefined,
+        page_size: 200,
+      }),
     refetchInterval: 30_000,
     placeholderData: keepPreviousData,
   });
@@ -143,7 +151,7 @@ export function DiscardPoolPage() {
                 <TableHead>废弃原因</TableHead>
                 <TableHead>详情</TableHead>
                 <TableHead>废弃时余额</TableHead>
-                <TableHead>废弃时间</TableHead>
+                <SortableHead label="废弃时间" sortKey="discarded_at" sort={sort} onSort={setSort} firstDir="desc" />
                 <TableHead className="text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
