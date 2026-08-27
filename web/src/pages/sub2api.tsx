@@ -143,6 +143,7 @@ export function Sub2ApiPage() {
   const [autoRepair, setAutoRepair] = useState(true);
   const [maxRepair, setMaxRepair] = useState('2');
   const [autoReplenish, setAutoReplenish] = useState(false);
+  const [refreshBalance, setRefreshBalance] = useState(true);
   const [replenishUploadOrder, setReplenishUploadOrder] = useState('balance_asc');
   const [replenishJoinOrder, setReplenishJoinOrder] = useState('balance_desc');
   const [reserveThreshold, setReserveThreshold] = useState('10');
@@ -159,6 +160,7 @@ export function Sub2ApiPage() {
       setAutoRepair(m.auto_repair !== false);
       setMaxRepair(String(m.max_repair_attempts ?? 2));
       setAutoReplenish(Boolean(m.auto_replenish));
+      setRefreshBalance(m.refresh_balance !== false);
       setReplenishUploadOrder(m.replenish_upload_order ?? 'balance_asc');
       setReplenishJoinOrder(m.replenish_join_order ?? 'balance_desc');
       setReserveThreshold(String(m.reserve_threshold ?? 10));
@@ -176,6 +178,7 @@ export function Sub2ApiPage() {
     auto_repair: autoRepair,
     max_repair_attempts: Number(maxRepair) || 2,
     auto_replenish: autoReplenish,
+    refresh_balance: refreshBalance,
     reserve_threshold: Number(reserveThreshold) || 10,
     replenish_upload_order: replenishUploadOrder,
     replenish_join_order: replenishJoinOrder,
@@ -201,7 +204,7 @@ export function Sub2ApiPage() {
       const r = view?.last_result;
       toast.success(
         r
-          ? `巡检完成：扫描 ${r.scanned ?? 0} · 异常 ${r.error_accounts} · 限流 ${r.rate_limited ?? 0} · 废弃 ${r.discarded} · 待辅证 ${r.ban_unconfirmed ?? 0} · 修复中 ${r.repairing} · 上传 ${r.uploaded ?? 0} · 补号 ${r.replenished}${r.available_count != null ? ` · 可用 ${r.available_count}` : ''}`
+          ? `巡检完成：扫描 ${r.scanned ?? 0} · 异常 ${r.error_accounts} · 限流 ${r.rate_limited ?? 0} · 废弃 ${r.discarded} · 待辅证 ${r.ban_unconfirmed ?? 0} · 修复中 ${r.repairing} · 上传 ${r.uploaded ?? 0} · 补号 ${r.replenished} · 余额 ${r.balance_queued ?? 0}${r.available_count != null ? ` · 可用 ${r.available_count}` : ''}`
           : '巡检完成',
       );
       queryClient.invalidateQueries({ queryKey: ['sub2api', 'monitor'] });
@@ -418,6 +421,10 @@ export function Sub2ApiPage() {
           <label className="flex items-center gap-2 text-sm">
             <Switch checked={autoRepair} onCheckedChange={setAutoRepair} />
             临时错误自动重登修复
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <Switch checked={refreshBalance} onCheckedChange={setRefreshBalance} />
+            巡检时刷新已上传号的余额（优先经 sub2api 绑定代理查询）
           </label>
           <label className="flex items-center gap-2 text-sm">
             <Switch checked={autoReplenish} onCheckedChange={setAutoReplenish} />

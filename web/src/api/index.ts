@@ -19,6 +19,7 @@ import type {
   Sub2ApiMonitorView,
   Sub2ApiProxyReplaceResult,
   Sub2ApiProxyView,
+  Sub2ApiSyncResult,
   UploadOptions,
   UploadOrder,
 } from './types';
@@ -143,6 +144,7 @@ export const sub2apiApi = {
   monitorLogs: (limit = 20) => api<{ items: Sub2ApiMonitorLog[] }>(`/sub2api/monitor/logs?limit=${limit}`),
   updateMonitor: (body: Record<string, unknown>) => api<Sub2ApiMonitorView>('/sub2api/monitor', { json: body }),
   checkNow: () => api<{ ok: boolean; monitor: Sub2ApiMonitorView }>('/sub2api/monitor/check', { json: {} }),
+  syncRemote: () => api<Sub2ApiSyncResult>('/sub2api/sync-remote', { method: 'POST', json: {} }),
 };
 
 // ---------- settings / dashboard ----------

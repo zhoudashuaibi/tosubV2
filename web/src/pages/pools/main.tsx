@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { Archive, Coins, Download, KeyRound, Loader2, Plus, RefreshCw, Search, Trash2, Upload, Users } from 'lucide-react';
+import { Archive, CloudDownload, Coins, Download, KeyRound, Loader2, Plus, RefreshCw, Search, Trash2, Upload, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import { accountsApi, sub2apiApi } from '@/api';
 import { download, errorMessage } from '@/api/client';
@@ -79,6 +79,17 @@ export function MainPoolPage() {
     mutationFn: (ids: number[]) => accountsApi.batchRefreshBalance(ids),
     onSuccess: (result) => {
       toast.success(`已发起 ${result.started} 个余额查询任务`);
+      invalidate();
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const syncRemoteMutation = useMutation({
+    mutationFn: () => sub2apiApi.syncRemote(),
+    onSuccess: (result) => {
+      const parts = [`新关联 ${result.linked}`, `状态更新 ${result.status_updated}`];
+      if (result.unlinked) parts.push(`解除 ${result.unlinked}`);
+      toast.success(`远端同步完成（扫描 ${result.scanned}）：${parts.join('，')}`);
       invalidate();
     },
     onError: (error) => toast.error(errorMessage(error)),
@@ -189,6 +200,15 @@ export function MainPoolPage() {
             { value: 'needs_reauth', label: '待重新授权' },
           ]}
         />
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={syncRemoteMutation.isPending}
+          onClick={() => syncRemoteMutation.mutate()}
+        >
+          {syncRemoteMutation.isPending ? <Loader2 className="animate-spin" /> : <CloudDownload />}
+          同步远端
+        </Button>
         <Button variant="outline" size="sm" onClick={() => setAddOpen(true)}>
           <Plus />
           添加账号

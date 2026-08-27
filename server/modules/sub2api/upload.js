@@ -112,13 +112,33 @@ export function createUploader({ db, crypto, client, getConfig, dataDir, proxySe
           `tosub2-upload-${nodeCrypto.randomUUID()}`,
         );
         created = toCreate.length;
+        // 批量创建响应不含新账号 ID：重拉远端索引按 email 回填真实 sub2api_account_id
+        // （远端状态列、已上传统计、余额查询选路都依赖它；重拉失败退化为仅记上传时间，留待同步补齐）
+        let createdIndexByEmail = null;
+        try {
+          const after = await client.listAllOpenAiAccounts();
+          createdIndexByEmail = new Map();
+          for (const acc of after) {
+            const email = client.accountEmail(acc);
+            if (email) createdIndexByEmail.set(email.toLowerCase(), Number(acc.id));
+          }
+        } catch (indexError) {
+          logger?.warn?.({ err: indexError.message }, 'reload remote index after create failed');
+        }
         const now = new Date().toISOString();
         const tx = db.transaction(() => {
           for (const item of toCreate) {
-            db.prepare(
-              `UPDATE accounts SET sub2api_uploaded_at=?, sub2api_account_id=COALESCE(sub2api_account_id, NULL), updated_at=? WHERE id=?`,
-            ).run(now, now, item.id);
-            recordEvent(item.id, 'uploaded_sub2api', { mode: 'create', name: item.payload.name });
+            const remoteId = createdIndexByEmail?.get(emailById.get(item.id));
+            if (Number.isSafeInteger(remoteId) && remoteId > 0) {
+              db.prepare(
+                `UPDATE accounts SET sub2api_uploaded_at=?, sub2api_account_id=?, updated_at=? WHERE id=?`,
+              ).run(now, remoteId, now, item.id);
+            } else {
+              db.prepare(
+                `UPDATE accounts SET sub2api_uploaded_at=?, updated_at=? WHERE id=?`,
+              ).run(now, now, item.id);
+            }
+            recordEvent(item.id, 'uploaded_sub2api', { mode: 'create', name: item.payload.name, remote_id: remoteId ?? null });
           }
         });
         tx();
@@ -203,18 +223,23 @@ export function createUploader({ db, crypto, client, getConfig, dataDir, proxySe
     if (!row) return;
     let balance = row.balance;
     if (balance === null || balance === undefined) {
-      // 实时查一次余额（失败不阻断，保持原名）
+      // 实时查一次余额（失败不阻断，保持原名）。此时号尚未上传 sub2api，
+      // 选路与登录一致：账号绑定代理 > 全局 alive 代理 > 直连
       try {
         const tokens = crypto.tryDecryptJson(row.tokens_enc, 'accounts.tokens_enc') || {};
         if (!tokens.access_token) return;
         const { fetchChatgptCredits } = await import('../../core/chatgpt-credits.mjs');
         const { fetchWithTls } = await import('../../lib/openai-fetch.js');
-        const proxy = proxySelector ? proxySelector.pickRandomAliveProxy() : { url: null };
+        const credentials = crypto.tryDecryptJson(row.credentials_enc, 'accounts.credentials_enc') || {};
+        const proxyUrl =
+          credentials.proxy_url ||
+          (proxySelector ? proxySelector.pickRandomAliveProxy()?.url : null) ||
+          null;
         const result = await fetchChatgptCredits({
           accessToken: tokens.access_token,
           refreshToken: tokens.refresh_token,
           clientId: tokens.client_id,
-          fetchImpl: (url, options) => fetchWithTls(url, options, { proxyUrl: proxy.url }),
+          fetchImpl: (url, options) => fetchWithTls(url, options, { proxyUrl }),
         });
         balance = result.balance;
         db.prepare('UPDATE accounts SET balance=?, balance_checked_at=?, balance_error=NULL WHERE id=?').run(

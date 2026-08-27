@@ -22,6 +22,7 @@ export function createJobsEngine({ config, db, logger }) {
   let tickTimer = null;
   let stopped = false;
   let balanceActive = 0;
+  let balanceProxyResolver = null; // sub2api 模块注入：号已上传时解析远端绑定代理
   const hooks = {}; // 可选外部回调：onLoginSucceeded / onLoginFailed / onAccountEvent
 
   const stmt = {
@@ -167,7 +168,41 @@ export function createJobsEngine({ config, db, logger }) {
     const tokens = config.cryptoTryDecryptJson(account.tokens_enc, 'accounts.tokens_enc') || {};
     const credentials = config.cryptoTryDecryptJson(account.credentials_enc, 'accounts.credentials_enc') || {};
 
-    // 选路与登录一致：有可用代理先走代理（账号绑定代理 > 全局 alive 代理），无可用代理才本机直连。
+    // 已上传 sub2api 的号优先用远端绑定代理查询（与线上出口 IP 一致，避免换 IP 查询触发风控）；
+    // 远端代理失败只做同代理重试（服务商端会轮换出口 IP），不回退本机选路
+    if (balanceProxyResolver) {
+      let remoteRoute = null;
+      try {
+        remoteRoute = await balanceProxyResolver(job.account_id);
+      } catch (error) {
+        logger.warn({ jobId: job.id, err: error.message }, 'resolve sub2api-bound proxy failed');
+      }
+      if (remoteRoute?.url) {
+        logger.info(
+          { jobId: job.id, remoteAccountId: remoteRoute.remote_id, proxy: remoteRoute.proxy_name },
+          'balance job via sub2api-bound proxy',
+        );
+        let result = null;
+        for (let attempt = 1; attempt <= BALANCE_PROXY_ATTEMPTS && !result; attempt += 1) {
+          try {
+            result = await fetchChatgptCredits({
+              accessToken: tokens.access_token,
+              refreshToken: tokens.refresh_token,
+              clientId: tokens.client_id,
+              fetchImpl: (url, options) => fetchWithTls(url, options, { proxyUrl: remoteRoute.url }),
+            });
+          } catch (error) {
+            if (attempt >= BALANCE_PROXY_ATTEMPTS) throw error;
+            logger.warn({ jobId: job.id, attempt, err: error.message }, 'sub2api-bound proxy balance attempt failed');
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
+        }
+        persistBalanceResult(job, account, tokens, result, 'sub2api_proxy');
+        return;
+      }
+    }
+
+    // 未上传 sub2api：选路与登录一致：有可用代理先走代理（账号绑定代理 > 全局 alive 代理），无可用代理才本机直连。
     // 代理连接失败/风控时换代理重试，重试耗尽直接失败，不悄悄回退本机。
     const excludeIds = [];
     for (let attempt = 1; ; attempt += 1) {
@@ -195,22 +230,26 @@ export function createJobsEngine({ config, db, logger }) {
         continue;
       }
 
-      const now = new Date().toISOString();
-      db.prepare(
-        'UPDATE accounts SET balance = ?, balance_checked_at = ?, balance_error = NULL, updated_at = ? WHERE id = ?',
-      ).run(result.balance, now, now, account.id);
-      if (result.refreshedAccessToken) {
-        tokens.access_token = result.refreshedAccessToken;
-        db.prepare('UPDATE accounts SET tokens_enc = ?, updated_at = ? WHERE id = ?').run(
-          config.cryptoEncryptJson(tokens, 'accounts.tokens_enc'),
-          now,
-          account.id,
-        );
-      }
-      recordAccountEvent(account.id, 'balance_refreshed', { balance: result.balance, job_id: job.id, source: 'job' });
-      patchJob(job.id, { status: 'completed', finished_at: new Date().toISOString() });
+      persistBalanceResult(job, account, tokens, result, 'job');
       return;
     }
+  }
+
+  function persistBalanceResult(job, account, tokens, result, source) {
+    const now = new Date().toISOString();
+    db.prepare(
+      'UPDATE accounts SET balance = ?, balance_checked_at = ?, balance_error = NULL, updated_at = ? WHERE id = ?',
+    ).run(result.balance, now, now, account.id);
+    if (result.refreshedAccessToken) {
+      tokens.access_token = result.refreshedAccessToken;
+      db.prepare('UPDATE accounts SET tokens_enc = ?, updated_at = ? WHERE id = ?').run(
+        config.cryptoEncryptJson(tokens, 'accounts.tokens_enc'),
+        now,
+        account.id,
+      );
+    }
+    recordAccountEvent(account.id, 'balance_refreshed', { balance: result.balance, job_id: job.id, source });
+    patchJob(job.id, { status: 'completed', finished_at: now });
   }
 
   function checkTimeouts() {
@@ -670,6 +709,9 @@ export function createJobsEngine({ config, db, logger }) {
     hooks,
     getRuntime,
     recoverInterrupted,
+    setBalanceProxyResolver: (resolver) => {
+      balanceProxyResolver = typeof resolver === 'function' ? resolver : null;
+    },
   };
 }
 

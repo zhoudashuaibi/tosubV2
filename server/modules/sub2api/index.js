@@ -4,6 +4,7 @@ import { createSub2apiClient } from './client.js';
 import { createUploader } from './upload.js';
 import { createMonitor } from './monitor.js';
 import { createProxyReplacer } from './proxy-replace.js';
+import { createRemoteSync } from './remote-sync.js';
 import { createBanMailCheck } from '../accounts/ban-mail-check.js';
 
 const CONFIG_KEY = 'sub2api.config';
@@ -25,6 +26,14 @@ export function createSub2apiModule({ engine, logger }) {
     });
     app.decorate('sub2apiUploader', uploader);
 
+    const remoteSync = createRemoteSync({
+      db,
+      client,
+      getConfig: () => app.settings.get(CONFIG_KEY),
+      logger,
+    });
+    app.decorate('sub2apiRemoteSync', remoteSync);
+
     const monitor = createMonitor({
       db,
       crypto: app.crypto,
@@ -33,6 +42,7 @@ export function createSub2apiModule({ engine, logger }) {
       pools: app.accountsPools,
       engine,
       uploader,
+      remoteSync,
       banMailCheck: createBanMailCheck({
         db,
         getEndpoint: () => app.settings.get('outlook.fetch').endpoint,
@@ -44,6 +54,9 @@ export function createSub2apiModule({ engine, logger }) {
     app.decorate('sub2apiMonitor', monitor);
 
     const replaceProxies = createProxyReplacer({ client, logger });
+
+    // 余额查询选路注入：号已上传 sub2api 时优先用其在远端绑定的代理（未上传仍走本机代理/直连）
+    engine.setBalanceProxyResolver?.((accountId) => remoteSync.resolveSub2apiProxy(accountId));
 
     // 引擎 hook：修复链路产物回传远端（refresh 成功，或 refresh 失败自动转的完整登录成功）
     const previousHandler = engine.hooks.onTokensSaved;
@@ -232,6 +245,17 @@ export function createSub2apiModule({ engine, logger }) {
       };
     });
 
+    // 手动同步远端状态：回填 sub2api_account_id + 镜像远端真实 status（巡检每轮也会自动同步）
+    app.post('/api/v1/sub2api/sync-remote', async (request, reply) => {
+      const config = app.settings.get(CONFIG_KEY);
+      if (!config?.base_url || !config?.admin_key) {
+        throw Object.assign(new Error('请先配置 sub2api'), { status: 422, code: 'SUB2API_NOT_CONFIGURED' });
+      }
+      const result = await remoteSync.syncRemoteStatus();
+      reply.code(200);
+      return { ok: true, ...result };
+    });
+
     app.get('/api/v1/sub2api/monitor', async () => monitor.view());
 
     app.get('/api/v1/sub2api/monitor/logs', async (request) => {
@@ -250,6 +274,7 @@ export function createSub2apiModule({ engine, logger }) {
         'auto_repair',
         'max_repair_attempts',
         'auto_replenish',
+        'refresh_balance',
         'reserve_threshold',
         'replenish_upload_order',
         'replenish_join_order',

@@ -178,6 +178,8 @@ export interface Sub2ApiMonitorConfig {
   auto_repair: boolean;
   max_repair_attempts: number;
   auto_replenish: boolean;
+  /** 巡检时顺带刷新已上传号的余额（默认开） */
+  refresh_balance?: boolean;
   reserve_threshold: number;
   /** 自动补号挑号顺序：主池库存上传（默认 balance_asc 余额小优先） */
   replenish_upload_order?: UploadOrder;
@@ -265,6 +267,7 @@ export interface Sub2ApiMonitorView {
   auto_repair: boolean;
   max_repair_attempts: number;
   auto_replenish: boolean;
+  refresh_balance?: boolean;
   reserve_threshold: number;
   last_check_at: string | null;
   next_check_at: string | null;
@@ -280,7 +283,17 @@ export interface Sub2ApiMonitorView {
     replenished: number;
     available_count?: number | null;
     stock_count?: number | null;
+    balance_queued?: number;
+    remote_sync?: { scanned?: number; linked?: number; unlinked?: number; status_updated?: number };
   } | null;
+}
+
+export interface Sub2ApiSyncResult {
+  ok: boolean;
+  scanned: number;
+  linked: number;
+  unlinked: number;
+  status_updated: number;
 }
 
 export interface DashboardSummary {

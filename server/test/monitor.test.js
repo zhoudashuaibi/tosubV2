@@ -101,6 +101,8 @@ function buildMonitor({
       enabled: true,
       auto_repair: autoRepair,
       auto_replenish: true,
+      // 巡检余额刷新走独立测试覆盖；默认关避免影响既有 submitJob 精确断言
+      refresh_balance: false,
       reserve_threshold: threshold,
       banned_patterns: bannedPatterns,
       rate_limit_patterns: ['429', 'rate limit'],
@@ -142,6 +144,39 @@ test('补号计数：远端正常的主池号计入，达到阈值不补', async
   assert.equal(view.last_result.available_count, 3);
   assert.equal(view.last_result.replenished, 0);
   assert.equal(ctx.submitted.length, 0);
+});
+
+test('巡检余额刷新：已上传主池号排队，限流/备用池/已有任务跳过', async () => {
+  const okId = insertAccount(ctx.db, ctx.crypto, { email: 'ok@test.local', tokens: { refresh_token: 'rt' } });
+  insertAccount(ctx.db, ctx.crypto, { email: 'no-tokens@test.local' });
+  insertAccount(ctx.db, ctx.crypto, { email: 'limited@test.local', tokens: { refresh_token: 'rt' } });
+  insertAccount(ctx.db, ctx.crypto, { email: 'busy@test.local', tokens: { refresh_token: 'rt' } });
+  insertAccount(ctx.db, ctx.crypto, { email: 'reserve@test.local', pool: 'reserve', status: 'mail_ok', tokens: { refresh_token: 'rt' } });
+  const busyId = ctx.db.prepare(`SELECT id FROM accounts WHERE email='busy@test.local'`).get().id;
+  insertRunningJob(ctx.db, busyId);
+  const monitor = buildMonitor({
+    threshold: 10,
+    monitorConfig: { refresh_balance: true },
+    remoteAccounts: [
+      remoteAccount({ id: 1, email: 'ok@test.local' }),
+      remoteAccount({ id: 2, email: 'no-tokens@test.local' }),
+      remoteAccount({
+        id: 3,
+        email: 'limited@test.local',
+        rateLimitedAt: new Date().toISOString(),
+        resetAt: new Date(Date.now() + 3600_000).toISOString(),
+      }),
+      remoteAccount({ id: 4, email: 'busy@test.local' }),
+      remoteAccount({ id: 5, email: 'reserve@test.local' }),
+    ],
+  });
+
+  const view = await monitor.runCheck();
+
+  assert.equal(view.last_result.balance_queued, 1);
+  const balanceJobs = ctx.submitted.filter((job) => job.type === 'balance');
+  assert.equal(balanceJobs.length, 1);
+  assert.equal(balanceJobs[0].accountId, okId);
 });
 
 test('补号计数：限流中（429）的号不计入，缺口触发补号', async () => {

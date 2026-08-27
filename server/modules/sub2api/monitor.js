@@ -4,6 +4,8 @@ import { uploadOrderExpr } from '../../lib/upload-order.js';
 /**
  * sub2api 监控巡检（默认 5 分钟一轮）：
  *  - 只监控 OAuth 授权号（本系统上传的 free 号，type=oauth）；API Key 号（plus/pro/team 等）完全忽略
+ *  - 每轮同步远端状态：按 email/ID 回填 sub2api_account_id、镜像远端真实 status（主号池“远端状态”列）
+ *  - 每轮刷新已上传号余额（refresh_balance，默认开）：走 balance 任务通道，选路优先 sub2api 绑定代理
  *  - 拉全量监控分组账号 → error 账号分类（banned/rate_limit/临时错误）
  *  - OAuth 号限流不写 status=error，用 rate_limited_at 判定：重置时间超过阈值 → 移废弃池，否则保留观察
  *  - 401/会话过期 → 自动修复：有 refresh_token 先刷新（失败自动转完整登录），没有直接发完整登录；
@@ -20,7 +22,7 @@ import { uploadOrderExpr } from '../../lib/upload-order.js';
 const PERMANENT_PATTERN = /account_deactivated|account_deleted|account_suspended|deactivated|permanently\s+deleted/i;
 const LOG_ROUNDS_RETAINED = 100;
 
-export function createMonitor({ db, crypto, client, getConfig, pools, engine, uploader, banMailCheck, logger }) {
+export function createMonitor({ db, crypto, client, getConfig, pools, engine, uploader, remoteSync = null, banMailCheck, logger }) {
   const state = {
     running: false,
     timer: null,
@@ -65,6 +67,7 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
       auto_repair: config.auto_repair !== false,
       max_repair_attempts: config.max_repair_attempts ?? 2,
       auto_replenish: Boolean(config.auto_replenish),
+      refresh_balance: config.refresh_balance !== false,
       reserve_threshold: config.reserve_threshold ?? 10,
       replenish_upload_order: config.replenish_upload_order ?? 'balance_asc',
       replenish_join_order: config.replenish_join_order ?? 'balance_desc',
@@ -178,6 +181,16 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
 
       // 全量拉取一次：限流态不写 status=error，按 status 过滤会漏掉
       accounts = await client.listAllOpenAiAccounts();
+
+      // 每轮顺带同步远端状态（回填 sub2api_account_id / 镜像远端 status），失败不阻断巡检
+      if (remoteSync) {
+        try {
+          result.remote_sync = await remoteSync.syncRemoteStatus({ remoteAccounts: accounts });
+        } catch (error) {
+          logger.warn({ err: error.message }, 'remote sync in monitor failed');
+        }
+      }
+
       // 只监控本系统上传的 OAuth 授权号（free 号，oauth---邮箱 命名）：
       // type=oauth 过滤掉 API Key 号（plus/pro/team 等），本地邮箱匹配过滤掉非本系统上传的
       const localAccounts = db.prepare(`SELECT * FROM accounts WHERE pool IN ('main','reserve')`).all();
@@ -276,6 +289,27 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
         } else {
           items.push({ email, remote_id: remote?.id, action: 'ignored', reason: 'temp_error', detail: errorMessage });
         }
+      }
+
+      // 巡检顺带刷新已上传号的余额：走 balance 任务通道并发消化，选路优先 sub2api 绑定代理
+      if (monitor.refresh_balance !== false) {
+        let balanceQueued = 0;
+        for (const { remote, local } of tracked) {
+          if (client.accountRateLimit(remote).limited_now) continue; // 限流中的号不再打扰
+          if (local.pool !== 'main' || !local.tokens_enc) continue;
+          // 同账号活跃任务唯一索引：登录/修复/余额任一在途都留待下轮
+          const active = db
+            .prepare(`SELECT id FROM jobs WHERE account_id=? AND status IN ('queued','running','awaiting_input')`)
+            .get(local.id);
+          if (active) continue;
+          try {
+            engine.submitJob({ accountId: local.id, type: 'balance', note: 'monitor 巡检查余额' });
+            balanceQueued += 1;
+          } catch {
+            // 同账号活跃任务唯一索引冲突（如修复中）→ 留待下轮
+          }
+        }
+        result.balance_queued = balanceQueued;
       }
 
       // 自动补号（级联：主池库存上传 + 备用池登录）

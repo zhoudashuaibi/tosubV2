@@ -28,8 +28,8 @@ const SORT_WHITELIST = {
     email: 'email',
     balance: 'balance',
     status: 'status',
-    // 远端状态是派生列：active < 其他状态 < 未上传
-    remote_status: `CASE WHEN sub2api_account_id IS NULL THEN 2 WHEN status = 'active' THEN 0 ELSE 1 END`,
+    // 远端状态是派生列：远端镜像 status 优先（未同步过回退本地登录状态），active < 其他状态 < 未上传
+    remote_status: `CASE WHEN sub2api_account_id IS NULL THEN 2 WHEN COALESCE(sub2api_status, status) = 'active' THEN 0 ELSE 1 END`,
     last_login_at: 'last_login_at',
     sub2api_uploaded_at: 'sub2api_uploaded_at',
   },
@@ -89,11 +89,17 @@ export function createAccountsModule({ engine, logger }) {
           return;
         }
         if (ok) {
-          // join 成功后异步补查余额（任务已终态，不会触发同账号活跃任务唯一索引冲突）
+          // 登录成功后总是补查一次余额（首次 join 与重新授权都刷新；任务已终态，
+          // 若同账号已有排队的余额任务则跳过，避免活跃任务唯一索引冲突）
           try {
             const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(job.account_id);
-            if (account?.pool === 'main' && account.balance == null) {
-              engine.submitJob({ accountId: job.account_id, type: 'balance', note: 'join 成功后自动查余额' });
+            if (account?.pool === 'main' && account.tokens_enc) {
+              const active = db
+                .prepare(`SELECT id FROM jobs WHERE account_id=? AND status IN ('queued','running') AND type='balance'`)
+                .get(job.account_id);
+              if (!active) {
+                engine.submitJob({ accountId: job.account_id, type: 'balance', note: '登录成功后自动查余额' });
+              }
             }
           } catch (error) {
             logger.warn({ accountId: job.account_id, err: error.message }, 'auto balance job submit failed');
@@ -224,7 +230,10 @@ export function createAccountsModule({ engine, logger }) {
           last_login_at: row.last_login_at,
           sub2api_account_id: row.sub2api_account_id,
           sub2api_uploaded_at: row.sub2api_uploaded_at,
-          remote_status: row.sub2api_account_id ? (row.status === 'active' ? 'active' : row.status) : null,
+          // 远端真实 status（巡检/手动同步镜像）优先；未同步过回退本地登录状态推导
+          remote_status: row.sub2api_account_id
+            ? row.sub2api_status || (row.status === 'active' ? 'active' : row.status)
+            : null,
           has_refresh_token: Boolean(tokens?.refresh_token),
           has_password: Boolean(credentials?.password),
           has_totp: Boolean(credentials?.totp_secret),
