@@ -77,15 +77,25 @@ export function ReservePoolPage() {
   });
 
   const joinMutation = useMutation({
-    mutationFn: (ids: number[]) => accountsApi.joinMain(ids, joinOrder || undefined),
+    mutationFn: ({ ids, force }: { ids: number[]; force?: boolean }) =>
+      accountsApi.joinMain(ids, joinOrder || undefined, force),
     onSuccess: (result) => {
       toast.success(`已发起 ${result.started.length} 个账号加入主号池`);
       for (const skip of result.skipped) toast.warning(`账号 ${skip.id} 跳过：${skip.reason}`);
       setSelected(new Set());
+      setForceJoin(null);
       invalidate();
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
+
+  // 选中里含封禁号时先确认，确认后 force 加入并清除封禁标记
+  const [forceJoin, setForceJoin] = useState<{ ids: number[]; bannedCount: number } | null>(null);
+  const tryJoin = (ids: number[]) => {
+    const bannedCount = items.filter((i) => ids.includes(i.id) && i.banned).length;
+    if (bannedCount > 0) setForceJoin({ ids, bannedCount });
+    else joinMutation.mutate({ ids });
+  };
 
   const refreshMailMutation = useMutation({
     mutationFn: (ids: number[]) => Promise.all(ids.map((id) => accountsApi.refreshMail(id))),
@@ -267,10 +277,10 @@ export function ReservePoolPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={account.banned || account.status === 'joining'}
-                        onClick={() => joinMutation.mutate([account.id])}
+                        disabled={account.status === 'joining'}
+                        onClick={() => tryJoin([account.id])}
                       >
-                        加入主号池
+                        {account.banned ? '强制加入' : '加入主号池'}
                       </Button>
                       <Button size="sm" variant="ghost" onClick={() => setEditAccount(account)}>
                         <Pencil className="h-3.5 w-3.5" />
@@ -301,7 +311,7 @@ export function ReservePoolPage() {
 
       <BatchActionBar count={selected.size} onClear={() => setSelected(new Set())} extra={`合计余额 $${selectedBalance.toFixed(2)}`}>
         <UploadOrderSelect value={joinOrder} onValueChange={setJoinOrder} />
-        <Button size="sm" onClick={() => joinMutation.mutate(selectedIds)} disabled={joinMutation.isPending}>
+        <Button size="sm" onClick={() => tryJoin(selectedIds)} disabled={joinMutation.isPending}>
           {joinMutation.isPending && <Loader2 className="animate-spin" />}
           批量加入主号池
         </Button>
@@ -359,6 +369,16 @@ export function ReservePoolPage() {
         confirmText="删除"
         busy={deleteMutation.isPending}
         onConfirm={() => deleteMutation.mutate(selectedIds)}
+      />
+
+      <ConfirmDialog
+        open={forceJoin !== null}
+        onOpenChange={(open) => !open && setForceJoin(null)}
+        title={`强制加入 ${forceJoin?.ids.length ?? 0} 个账号？`}
+        description={`其中 ${forceJoin?.bannedCount ?? 0} 个已被邮件检查标记为封禁。强制加入将清除封禁标记并发起授权登录，是否继续？`}
+        confirmText="强制加入"
+        busy={joinMutation.isPending}
+        onConfirm={() => forceJoin && joinMutation.mutate({ ids: forceJoin.ids, force: true })}
       />
     </div>
   );

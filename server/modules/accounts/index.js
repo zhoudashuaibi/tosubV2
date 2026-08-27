@@ -824,11 +824,14 @@ export function createAccountsModule({ engine, logger }) {
             properties: {
               ids: { type: 'array', items: { type: 'integer' }, maxItems: 500 },
               order: { type: 'string', enum: UPLOAD_ORDERS },
+              // 强制加入：被邮件封禁标记的号也放行，并清除封禁标记（用户否决封禁判断）
+              force: { type: 'boolean' },
             },
           },
         },
       },
       async (request, reply) => {
+        const force = Boolean(request.body.force);
         const started = [];
         const skipped = [];
         const ids = orderIdsForUpload(request.body.ids, request.body.order, 'reserve');
@@ -842,7 +845,7 @@ export function createAccountsModule({ engine, logger }) {
             skipped.push({ id, reason: 'CONFLICT' });
             continue;
           }
-          if (account.banned) {
+          if (account.banned && !force) {
             skipped.push({ id, reason: 'banned' });
             continue;
           }
@@ -855,12 +858,16 @@ export function createAccountsModule({ engine, logger }) {
           const tx = db.transaction(() => {
             const cas = db
               .prepare(
-                `UPDATE accounts SET status='joining', updated_at=? WHERE id=? AND pool='reserve' AND status != 'joining'`,
+                `UPDATE accounts SET status='joining', banned=0, banned_reason=NULL, updated_at=? WHERE id=? AND pool='reserve' AND status != 'joining'`,
               )
               .run(now, id);
             if (cas.changes === 0) throw errors.conflict('账号已在加入队列', 'ACCOUNT_STATE_INVALID');
-            pools.recordEvent(id, 'join_started', {});
-            engine.submitJob({ accountId: id, type: 'login', note: 'join-main' });
+            pools.recordEvent(
+              id,
+              'join_started',
+              account.banned ? { force: true, cleared_banned_reason: account.banned_reason } : {},
+            );
+            engine.submitJob({ accountId: id, type: 'login', note: force ? 'join-main (force)' : 'join-main' });
           });
           try {
             tx();

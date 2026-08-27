@@ -82,9 +82,9 @@ export const accountsApi = {
       method: 'PATCH',
       json: body,
     }),
-  joinMain: (ids: number[], order?: UploadOrder) =>
+  joinMain: (ids: number[], order?: UploadOrder, force = false) =>
     api<{ started: number[]; skipped: { id: number; reason: string }[] }>('/accounts/join-main', {
-      json: { ids, order },
+      json: { ids, order, force },
     }),
   batchAuthorize: (ids: number[]) =>
     api<{ started: number; skipped: { id: number; reason: string }[] }>('/accounts/batch-authorize', { json: { ids } }),
