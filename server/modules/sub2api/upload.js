@@ -178,6 +178,8 @@ export function createUploader({ db, crypto, client, getConfig, dataDir, proxySe
     else delete extra.auto_pause_5h_disabled;
     if (options.disable_auto_pause_7d) extra.auto_pause_7d_disabled = true;
     else delete extra.auto_pause_7d_disabled;
+    // sub2api 账号级长上下文计费开关（OpenAI 账号超 272K 上下文按官方倍率计费）；上游缺省 false，这里显式写布尔值
+    extra.openai_long_context_billing_enabled = options.enable_long_context_billing !== false;
 
     let proxyIdForAccount = options.proxy_id || 0;
     if (!proxyIdForAccount && proxySelection) {
@@ -312,6 +314,7 @@ export function mergeUploadOptions(defaults = {}, override = {}) {
     model_whitelist: defaults.model_whitelist || [],
     disable_auto_pause_5h: Boolean(defaults.disable_auto_pause_5h),
     disable_auto_pause_7d: Boolean(defaults.disable_auto_pause_7d),
+    enable_long_context_billing: defaults.enable_long_context_billing !== false,
     auto_select_proxy: defaults.auto_select_proxy !== false,
     proxy_id: defaults.proxy_id ?? null,
     ...override,

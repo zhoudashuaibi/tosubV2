@@ -481,6 +481,7 @@ function UploadConfigDialog({
   const [proxyId, setProxyId] = useState('');
   const [disable5h, setDisable5h] = useState(false);
   const [disable7d, setDisable7d] = useState(false);
+  const [longContextBilling, setLongContextBilling] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [order, setOrder] = useOrderPreference('pools.mainUploadOrder');
 
@@ -489,6 +490,7 @@ function UploadConfigDialog({
       setGroupIds(config.group_ids ?? []);
       setDisable5h(Boolean(defaults.disable_auto_pause_5h));
       setDisable7d(Boolean(defaults.disable_auto_pause_7d));
+      setLongContextBilling(defaults.enable_long_context_billing !== false);
       setAutoSelectProxy(defaults.auto_select_proxy !== false);
       setConcurrency(defaults.concurrency != null ? String(defaults.concurrency) : '');
       setLoadFactor(defaults.load_factor != null ? String(defaults.load_factor) : '');
@@ -588,7 +590,7 @@ function UploadConfigDialog({
               </Select>
             )}
           </div>
-          <div className="flex gap-6">
+          <div className="flex flex-wrap gap-6">
             <label className="flex items-center gap-2 text-sm">
               <Switch checked={disable5h} onCheckedChange={setDisable5h} />
               禁用 5h 自动暂停
@@ -596,6 +598,10 @@ function UploadConfigDialog({
             <label className="flex items-center gap-2 text-sm">
               <Switch checked={disable7d} onCheckedChange={setDisable7d} />
               禁用 7d 自动暂停
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <Switch checked={longContextBilling} onCheckedChange={setLongContextBilling} />
+              API 长上下文计费
             </label>
           </div>
         </div>
@@ -619,6 +625,7 @@ function UploadConfigDialog({
                 proxy_id: proxyId ? Number(proxyId) : null,
                 disable_auto_pause_5h: disable5h,
                 disable_auto_pause_7d: disable7d,
+                enable_long_context_billing: longContextBilling,
               }, order || undefined)
             }
           >

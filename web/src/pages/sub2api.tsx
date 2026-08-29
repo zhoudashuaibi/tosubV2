@@ -58,6 +58,7 @@ export function Sub2ApiPage() {
   const [proxyId, setProxyId] = useState('');
   const [disable5h, setDisable5h] = useState(false);
   const [disable7d, setDisable7d] = useState(false);
+  const [longContextBilling, setLongContextBilling] = useState(true);
 
   const { data: groups } = useQuery({
     queryKey: ['sub2api', 'groups'],
@@ -88,6 +89,7 @@ export function Sub2ApiPage() {
       setProxyId(ud.proxy_id != null ? String(ud.proxy_id) : '');
       setDisable5h(Boolean(ud.disable_auto_pause_5h));
       setDisable7d(Boolean(ud.disable_auto_pause_7d));
+      setLongContextBilling(ud.enable_long_context_billing !== false);
       setLoaded(true);
     }
   }, [config, loaded]);
@@ -102,6 +104,7 @@ export function Sub2ApiPage() {
       .filter(Boolean),
     disable_auto_pause_5h: disable5h,
     disable_auto_pause_7d: disable7d,
+    enable_long_context_billing: longContextBilling,
     auto_select_proxy: autoSelectProxy,
     proxy_id: proxyId ? Number(proxyId) : null,
   };
@@ -349,7 +352,7 @@ export function Sub2ApiPage() {
               </Select>
             )}
           </div>
-          <div className="flex gap-6">
+          <div className="flex flex-wrap gap-6">
             <label className="flex items-center gap-2 text-sm">
               <Switch checked={disable5h} onCheckedChange={setDisable5h} />
               禁用 5h 自动暂停
@@ -358,7 +361,14 @@ export function Sub2ApiPage() {
               <Switch checked={disable7d} onCheckedChange={setDisable7d} />
               禁用 7d 自动暂停
             </label>
+            <label className="flex items-center gap-2 text-sm">
+              <Switch checked={longContextBilling} onCheckedChange={setLongContextBilling} />
+              API 长上下文计费
+            </label>
           </div>
+          <p className="text-xs text-muted-foreground">
+            API 长上下文计费：账号超过 272K 上下文的请求按官方长上下文倍率计费（sub2api 账号级开关，默认开启）
+          </p>
           <Button onClick={() => saveUploadDefaultsMutation.mutate()} disabled={saveUploadDefaultsMutation.isPending}>
             {saveUploadDefaultsMutation.isPending && <Loader2 className="animate-spin" />}
             <Save className="h-4 w-4" />

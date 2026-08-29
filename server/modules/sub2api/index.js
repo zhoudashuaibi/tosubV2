@@ -129,6 +129,7 @@ export function createSub2apiModule({ engine, logger }) {
           : [],
         disable_auto_pause_5h: Boolean(input.disable_auto_pause_5h),
         disable_auto_pause_7d: Boolean(input.disable_auto_pause_7d),
+        enable_long_context_billing: input.enable_long_context_billing !== false,
         auto_select_proxy: input.auto_select_proxy !== false,
         proxy_id: Number.isSafeInteger(Number(input.proxy_id)) && Number(input.proxy_id) > 0
           ? Number(input.proxy_id)
