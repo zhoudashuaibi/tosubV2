@@ -13,6 +13,7 @@ import { createJobsEngine } from './modules/jobs/engine.js';
 import { createJobsModule as createJobsRoutesModule } from './modules/jobs/index.js';
 import { createAccountsModule } from './modules/accounts/index.js';
 import { createSub2apiModule } from './modules/sub2api/index.js';
+import { createTeamModule } from './modules/team/index.js';
 import { createSettingsModule } from './modules/settings/index.js';
 import { createDashboardModule } from './modules/dashboard/index.js';
 import { createStaticModule } from './modules/static/index.js';
@@ -80,11 +81,16 @@ const sub2apiRegister = fp(async (f) => {
   await createSub2apiModule({ engine: jobsEngine, logger })(f);
 }, { name: 'sub2api' });
 
+const teamRegister = fp(async (f) => {
+  await createTeamModule({ logger })(f);
+}, { name: 'team' });
+
 await app.register(fp(createAuthModule({ config, logger }), { name: 'auth' }));
 await app.register(proxiesRegister);
 await app.register(fp(createJobsRoutesModule({ engine: jobsEngine }), { name: 'jobs' }));
 await app.register(accountsRegister);
 await app.register(sub2apiRegister);
+await app.register(teamRegister);
 await app.register(fp(createSettingsModule({ logger }), { name: 'settings' }));
 await app.register(fp(createDashboardModule(), { name: 'dashboard' }));
 await app.register(fp(createStaticModule({ config, logger }), { name: 'static' }));

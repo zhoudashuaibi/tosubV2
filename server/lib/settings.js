@@ -25,6 +25,8 @@ export const DEFAULT_SETTINGS = {
       model_whitelist: [],
       disable_auto_pause_5h: false,
       disable_auto_pause_7d: false,
+      // sub2api 账号级长上下文计费（extra.openai_long_context_billing_enabled），上游默认关闭，这里默认开启
+      enable_long_context_billing: true,
       auto_select_proxy: true,
       proxy_id: null,
     },
@@ -50,6 +52,23 @@ export const DEFAULT_SETTINGS = {
     luban: {},
     smsbower: {},
     custom: { entries: '' },
+  },
+  // Team 号池：兑换服务地址 + 独立的上传默认配置（不与 sub2api.config 的共用）
+  'team.config': {
+    redeem_base_url: 'https://30d.team',
+    auto_upload_after_reclaim: true,
+    group_ids: [],
+    upload_defaults: {
+      concurrency: null,
+      load_factor: null,
+      priority: null,
+      model_whitelist: [],
+      disable_auto_pause_5h: false,
+      disable_auto_pause_7d: false,
+      enable_long_context_billing: true,
+      auto_select_proxy: true,
+      proxy_id: null,
+    },
   },
 };
 

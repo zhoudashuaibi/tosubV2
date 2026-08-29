@@ -20,6 +20,12 @@ import type {
   Sub2ApiProxyReplaceResult,
   Sub2ApiProxyView,
   Sub2ApiSyncResult,
+  TeamCard,
+  TeamCardImportResult,
+  TeamConfigView,
+  TeamSession,
+  TeamUploadResult,
+  TeamAccount,
   UploadOptions,
   UploadOrder,
 } from './types';
@@ -158,6 +164,44 @@ export const settingsApi = {
 
 export const dashboardApi = {
   summary: () => api<DashboardSummary>('/dashboard/summary'),
+};
+
+// ---------- team 号池 ----------
+export interface TeamCardFilter {
+  status?: string;
+  q?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export interface TeamAccountFilter {
+  status?: string;
+  uploaded?: string;
+  card_id?: number;
+  q?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export const teamApi = {
+  cards: (f: TeamCardFilter = {}) =>
+    api<Paged<TeamCard> & { stats: Record<string, number> }>(`/team/cards?${toQuery(f)}`),
+  importCards: (text: string) => api<TeamCardImportResult>('/team/cards/import', { json: { text } }),
+  deleteCards: (ids: number[]) => api<{ deleted: number }>('/team/cards/batch-delete', { json: { ids } }),
+  accounts: (f: TeamAccountFilter = {}) =>
+    api<Paged<TeamAccount> & { stats: Record<string, number> }>(`/team/accounts?${toQuery(f)}`),
+  stats: () =>
+    api<{ cards: Record<string, number>; accounts: Record<string, number> }>('/team/stats'),
+  healthCheck: (ids: number[]) => api<{ session: TeamSession }>('/team/health-check', { json: { ids } }),
+  reclaim: (ids: number[], mode: '401' | 'all') =>
+    api<{ session: TeamSession }>('/team/reclaim', { json: { ids, mode } }),
+  session: () => api<TeamSession>('/team/session'),
+  upload: (accountIds: number[]) => api<TeamUploadResult>('/team/upload', { json: { account_ids: accountIds } }),
+  config: () => api<TeamConfigView>('/team/config'),
+  updateConfig: (body: Record<string, unknown>) => api<{ config: TeamConfigView }>('/team/config', {
+    method: 'PUT',
+    json: body,
+  }),
 };
 
 function toQuery(obj: object): string {

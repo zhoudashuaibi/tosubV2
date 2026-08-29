@@ -1,5 +1,5 @@
 import { Link, useMatchRoute } from '@tanstack/react-router';
-import { Archive, Ellipsis, Globe, Inbox, LayoutDashboard, ListChecks, Server, Settings, Users } from 'lucide-react';
+import { Archive, Ellipsis, Globe, Inbox, LayoutDashboard, ListChecks, Server, Settings, Users, UsersRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -21,6 +21,7 @@ const PRIMARY_NAV = [
 
 const MORE_NAV = [
   { label: '废弃号池', to: '/pools/discard', icon: Archive },
+  { label: 'Team号池', to: '/pools/team', icon: UsersRound },
   { label: '代理列表', to: '/proxies', icon: Globe },
   { label: 'Sub2API', to: '/sub2api', icon: Server },
   { label: '设置', to: '/settings', icon: Settings },

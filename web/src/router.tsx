@@ -14,6 +14,7 @@ import { DashboardPage } from '@/pages/dashboard';
 import { ReservePoolPage } from '@/pages/pools/reserve';
 import { MainPoolPage } from '@/pages/pools/main';
 import { DiscardPoolPage } from '@/pages/pools/discard';
+import { TeamPoolPage } from '@/pages/pools/team';
 import { JobsPage } from '@/pages/jobs';
 import { ProxiesPage } from '@/pages/proxies';
 import { Sub2ApiPage } from '@/pages/sub2api';
@@ -95,6 +96,12 @@ const discardRoute = createRoute({
   component: withLayout('废弃号池', DiscardPoolPage),
 });
 
+const teamRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/pools/team',
+  component: withLayout('Team号池', TeamPoolPage),
+});
+
 const jobsRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
   path: '/jobs',
@@ -138,6 +145,7 @@ const routeTree = rootRoute.addChildren([
     reserveRoute,
     mainRoute,
     discardRoute,
+    teamRoute,
     jobsRoute,
     proxiesRoute,
     sub2apiRoute,

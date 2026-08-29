@@ -164,6 +164,7 @@ export interface UploadOptions {
   model_whitelist?: string[];
   disable_auto_pause_5h?: boolean;
   disable_auto_pause_7d?: boolean;
+  enable_long_context_billing?: boolean;
   auto_select_proxy?: boolean;
   proxy_id?: number | null;
 }
@@ -305,6 +306,82 @@ export interface DashboardSummary {
   jobs: { queued: number; running: number; awaiting_input: number };
   monitor: { enabled: boolean; last_check_at: string | null; last_error: string | null; last_result: Record<string, number> | null };
   recent_events: { email: string; type: string; detail: Record<string, unknown> | null; created_at: string }[];
+}
+
+// ---------- team 号池 ----------
+export type TeamCardStatus = 'unextracted' | 'healthy' | 'need_reclaim' | 'cannot_reclaim' | 'mixed';
+
+export interface TeamCard {
+  id: number;
+  card_code: string;
+  status: TeamCardStatus | string;
+  health: { summary: Record<string, number> | null; checked_at?: string; aggregate_only?: boolean } | null;
+  note: string | null;
+  last_extracted_at: string | null;
+  last_reclaim_at: string | null;
+  created_at: string;
+  updated_at: string;
+  account_count: number;
+  uploaded_count: number;
+}
+
+export interface TeamAccount {
+  id: number;
+  card_id: number;
+  card_code: string;
+  email: string;
+  short_name: string | null;
+  name: string | null;
+  health_status: 'healthy' | 'need_reclaim' | 'cannot_reclaim' | 'unknown' | null;
+  sub2api_account_id: number | null;
+  sub2api_uploaded_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TeamCardImportResult {
+  imported: number;
+  /** 本次新导入卡密的 ID（供导入后立即自动提取） */
+  imported_ids: number[];
+  duplicates_in_batch: string[];
+  duplicates_existing: string[];
+  invalid: { line: number; value: string }[];
+}
+
+export interface TeamSession {
+  running: boolean;
+  kind: 'health_check' | 'reclaim' | null;
+  phase: string | null;
+  message: string;
+  progress: {
+    done?: number;
+    total?: number;
+    batch?: number;
+    batches?: number;
+    tasks_done?: number;
+    tasks_total?: number;
+    pending?: number;
+    downloaded?: number;
+    download_total?: number;
+  } | null;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  started_at: string | null;
+  updated_at: string | null;
+}
+
+export interface TeamUploadResult {
+  created: number;
+  updated: number;
+  failed: { id: number; email: string | null; error: string }[];
+  updated_account_ids?: number[];
+}
+
+export interface TeamConfigView {
+  redeem_base_url: string;
+  auto_upload_after_reclaim: boolean;
+  group_ids: number[];
+  upload_defaults: UploadOptions;
 }
 
 export interface SettingsView {

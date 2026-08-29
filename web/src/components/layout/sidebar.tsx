@@ -10,6 +10,7 @@ import {
   Server,
   Settings,
   Users,
+  UsersRound,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -26,6 +27,10 @@ const NAV_SECTIONS = [
       { label: '主号池', to: '/pools/main', icon: Users },
       { label: '废弃号池', to: '/pools/discard', icon: Archive },
     ],
+  },
+  {
+    label: 'TEAM号池',
+    items: [{ label: 'Team号池', to: '/pools/team', icon: UsersRound }],
   },
   {
     label: '系统管理',
