@@ -21,12 +21,12 @@ function setup() {
   return { dataDir, db, crypto, pools, submitted: [], uploads: [], schedulable: [], banChecks: [], banResults: [] };
 }
 
-function insertAccount(db, crypto, { email, pool = 'main', status = 'active', tokens = null, credentials = null, balance = null }) {
+function insertAccount(db, crypto, { email, pool = 'main', status = 'active', tokens = null, credentials = null, balance = null, initialBalance = null }) {
   const now = new Date().toISOString();
   const result = db
     .prepare(
-      `INSERT INTO accounts(email, pool, status, mail_status, tokens_enc, credentials_enc, balance, imported_at, created_at, updated_at)
-       VALUES(?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO accounts(email, pool, status, mail_status, tokens_enc, credentials_enc, balance, initial_balance, imported_at, created_at, updated_at)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       email,
@@ -36,6 +36,7 @@ function insertAccount(db, crypto, { email, pool = 'main', status = 'active', to
       tokens ? crypto.encryptJson(tokens, 'accounts.tokens_enc') : null,
       credentials ? crypto.encryptJson(credentials, 'accounts.credentials_enc') : null,
       balance,
+      initialBalance,
       now,
       now,
       now,
@@ -56,7 +57,7 @@ function insertRunningJob(db, accountId) {
   );
 }
 
-function remoteAccount({ id, email, status = 'active', rateLimitedAt = null, resetAt = null, name = null, errorMessage = '401 unauthorized' }) {
+function remoteAccount({ id, email, status = 'active', rateLimitedAt = null, resetAt = null, name = null, errorMessage = '401 unauthorized', concurrency = null }) {
   return {
     id,
     type: 'oauth',
@@ -65,6 +66,7 @@ function remoteAccount({ id, email, status = 'active', rateLimitedAt = null, res
     credentials: { email },
     rate_limited_at: rateLimitedAt,
     rate_limit_reset_at: resetAt,
+    ...(concurrency != null ? { concurrency } : {}),
     error_message: status === 'error' ? errorMessage : null,
   };
 }
@@ -76,6 +78,7 @@ function buildMonitor({
   bannedPatterns = ['401'],
   banMailCheck = null,
   monitorConfig: monitorOverrides = {},
+  uploadDefaults = {},
 } = {}) {
   const client = {
     listAllOpenAiAccounts: async () => remoteAccounts,
@@ -97,6 +100,7 @@ function buildMonitor({
     base_url: 'http://sub2api.test',
     admin_key: 'sk-test',
     group_ids: [],
+    upload_defaults: uploadDefaults,
     monitor: {
       enabled: true,
       auto_repair: autoRepair,
@@ -301,7 +305,7 @@ test('封禁关键词 + 邮件辅证证实 → 移废弃池并阻断自动修复
   assert.equal(account.auto_repair_blocked, 1);
 });
 
-test('修复失败熔断：连续失败 max_repair_attempts 次移 repair_failed，转登录链路不重复计数', async () => {
+test('修复失败熔断：连续失败 max_repair_attempts 次暂停保留待重授（不废弃），转登录链路不重复计数', async () => {
   const id = insertAccount(ctx.db, ctx.crypto, { email: 'flaky@test.local' });
   const monitor = buildMonitor({}); // max_repair_attempts 默认 2
   ctx.db.prepare(`UPDATE accounts SET last_auto_repair_at=? WHERE id=?`).run(new Date().toISOString(), id);
@@ -314,18 +318,53 @@ test('修复失败熔断：连续失败 max_repair_attempts 次移 repair_failed
   monitor.noteRepairOutcome({ id: 'job-2', account_id: id, type: 'login' }, { ok: false });
   assert.equal(ctx.db.prepare(`SELECT repair_fail_count, pool FROM accounts WHERE id=?`).get(id).repair_fail_count, 1);
 
-  // 第二轮修复失败 → 达到上限，移 repair_failed
+  // 第二轮修复失败 → 达到上限：暂停保留（needs_reauth + 停自动修复），不废弃、不暂停远端（未关联远端）
   monitor.noteRepairOutcome({ id: 'job-3', account_id: id, type: 'login' }, { ok: false });
-  const account = ctx.db.prepare(`SELECT pool, discard_reason, repair_fail_count FROM accounts WHERE id=?`).get(id);
-  assert.equal(account.pool, 'discard');
-  assert.equal(account.discard_reason, 'repair_failed');
+  const account = ctx.db.prepare(`SELECT pool, status, discard_reason, repair_fail_count, auto_repair_blocked FROM accounts WHERE id=?`).get(id);
+  assert.equal(account.pool, 'main');
+  assert.equal(account.status, 'needs_reauth');
+  assert.equal(account.discard_reason, null);
   assert.equal(account.repair_fail_count, 2);
+  assert.equal(account.auto_repair_blocked, 1);
+  assert.deepEqual(ctx.schedulable, []);
 
   // 成功路径：清零
   const id2 = insertAccount(ctx.db, ctx.crypto, { email: 'healed@test.local' });
   ctx.db.prepare(`UPDATE accounts SET last_auto_repair_at=?, repair_fail_count=1 WHERE id=?`).run(new Date().toISOString(), id2);
   monitor.noteRepairOutcome({ id: 'job-4', account_id: id2, type: 'login' }, { ok: true });
   assert.equal(ctx.db.prepare(`SELECT repair_fail_count FROM accounts WHERE id=?`).get(id2).repair_fail_count, 0);
+});
+
+test('修复连败达上限：巡检不再发修复任务，暂停保留并暂停远端调度', async () => {
+  const id = insertAccount(ctx.db, ctx.crypto, { email: 'parked@test.local', tokens: { refresh_token: 'rt' } });
+  ctx.db.prepare(`UPDATE accounts SET repair_fail_count=2, sub2api_account_id=55 WHERE id=?`).run(id);
+  const monitor = buildMonitor({
+    autoRepair: true,
+    remoteAccounts: [remoteAccount({ id: 55, email: 'parked@test.local', status: 'error' })],
+  });
+
+  const view = await monitor.runCheck();
+
+  assert.equal(view.last_result.repairing, 0);
+  assert.equal(ctx.submitted.filter((job) => job.type !== 'balance').length, 0);
+  assert.deepEqual(ctx.schedulable, [{ id: 55, enabled: false }]);
+  const account = ctx.db.prepare(`SELECT pool, status, auto_repair_blocked FROM accounts WHERE id=?`).get(id);
+  assert.equal(account.pool, 'main');
+  assert.equal(account.status, 'needs_reauth');
+  assert.equal(account.auto_repair_blocked, 1);
+});
+
+test('主池重授成功：状态回 active 并解锁自动修复（清连败计数与封锁）', async () => {
+  const id = insertAccount(ctx.db, ctx.crypto, { email: 'reauth@test.local' });
+  ctx.db.prepare(`UPDATE accounts SET status='needs_reauth', auto_repair_blocked=1, repair_fail_count=2 WHERE id=?`).run(id);
+
+  ctx.pools.joinSucceeded(id, { tokensEnc: ctx.crypto.encryptJson({ access_token: 'at' }, 'accounts.tokens_enc') });
+
+  const account = ctx.db.prepare(`SELECT pool, status, auto_repair_blocked, repair_fail_count FROM accounts WHERE id=?`).get(id);
+  assert.equal(account.pool, 'main');
+  assert.equal(account.status, 'active');
+  assert.equal(account.auto_repair_blocked, 0);
+  assert.equal(account.repair_fail_count, 0);
 });
 
 test('补号计数：他人上传的号（本地无记录）不计入', async () => {
@@ -572,4 +611,122 @@ test('补号登录顺序：time_asc 按加入时间早优先', async () => {
     'mid@test.local',
     'new@test.local',
   ]);
+});
+
+// ---- resource 补号口径（总并发 + 初始总余额） ----
+
+test('resource 口径：并发缺口触发库存上传，补齐即停', async () => {
+  insertAccount(ctx.db, ctx.crypto, { email: 'ok@test.local' });
+  const s1 = insertAccount(ctx.db, ctx.crypto, { email: 's1@test.local', tokens: { refresh_token: 'rt' } });
+  const s2 = insertAccount(ctx.db, ctx.crypto, { email: 's2@test.local', tokens: { refresh_token: 'rt' } });
+  insertAccount(ctx.db, ctx.crypto, { email: 's3@test.local', tokens: { refresh_token: 'rt' } });
+  const monitor = buildMonitor({
+    remoteAccounts: [remoteAccount({ id: 1, email: 'ok@test.local', concurrency: 4 })],
+    monitorConfig: { replenish_mode: 'resource', concurrency_target: 10 },
+    uploadDefaults: { concurrency: 3 },
+  });
+
+  const view = await monitor.runCheck();
+
+  // 在架并发 4（远端记录优先），缺口 6，每号贡献 3（上传默认并发）→ 2 个补齐，第 3 个库存不动
+  assert.equal(view.last_result.fleet_concurrency, 4);
+  assert.equal(view.last_result.uploaded, 2);
+  assert.deepEqual(ctx.uploads[0].ids, [s1, s2]);
+  assert.equal(view.last_result.replenished, 0);
+});
+
+test('resource 口径：初始余额缺口触发（OR 语义），按初始余额贪心补齐', async () => {
+  insertAccount(ctx.db, ctx.crypto, { email: 'ok@test.local', initialBalance: 10 });
+  const s1 = insertAccount(ctx.db, ctx.crypto, { email: 's1@test.local', tokens: { refresh_token: 'rt' }, initialBalance: 8 });
+  const s2 = insertAccount(ctx.db, ctx.crypto, { email: 's2@test.local', tokens: { refresh_token: 'rt' }, initialBalance: 8 });
+  const s3 = insertAccount(ctx.db, ctx.crypto, { email: 's3@test.local', tokens: { refresh_token: 'rt' }, initialBalance: 8 });
+  const monitor = buildMonitor({
+    remoteAccounts: [remoteAccount({ id: 1, email: 'ok@test.local' })],
+    monitorConfig: { replenish_mode: 'resource', initial_balance_target: 30 },
+  });
+
+  const view = await monitor.runCheck();
+
+  // fleet 余额 10，缺 20：8×3=24 ≥ 20 → 恰好 3 个
+  assert.equal(view.last_result.fleet_initial_balance, 10);
+  assert.equal(view.last_result.uploaded, 3);
+  assert.deepEqual(ctx.uploads[0].ids, [s1, s2, s3]);
+});
+
+test('resource 口径：达标不补；error 号不计入，初始余额缺失回退当前余额', async () => {
+  // fleet 达标：在架 1 个（初始余额 40）→ 目标 30 无缺口，库存 0 也不上传（resource 口径不再看库存数量保底以外的数量）
+  insertAccount(ctx.db, ctx.crypto, { email: 'rich@test.local', initialBalance: 40 });
+  // error 号不计入统计；初始余额缺失回退 balance；均无记 0
+  insertAccount(ctx.db, ctx.crypto, { email: 'err@test.local', initialBalance: 50 });
+  insertAccount(ctx.db, ctx.crypto, { email: 'noinit@test.local', balance: 5 });
+  insertAccount(ctx.db, ctx.crypto, { email: 'blank@test.local' });
+  const monitor = buildMonitor({
+    remoteAccounts: [
+      remoteAccount({ id: 1, email: 'rich@test.local' }),
+      remoteAccount({ id: 2, email: 'err@test.local', status: 'error' }),
+      remoteAccount({ id: 3, email: 'noinit@test.local' }),
+      remoteAccount({ id: 4, email: 'blank@test.local' }),
+    ],
+    monitorConfig: { replenish_mode: 'resource', initial_balance_target: 30 },
+  });
+
+  const view = await monitor.runCheck();
+
+  // 计入 rich(40) + noinit(5→回退 balance) + blank(0) = 45 ≥ 30；err 的 50 不计入
+  assert.equal(view.last_result.fleet_initial_balance, 45);
+  assert.equal(view.last_result.available_count, 3);
+  assert.equal(ctx.uploads.length, 0);
+  assert.equal(view.last_result.uploaded, 0);
+});
+
+test('resource 口径：限流中的号计入统计（限流按现有逻辑恢复或废弃）', async () => {
+  insertAccount(ctx.db, ctx.crypto, { email: 'limited@test.local', initialBalance: 20 });
+  const monitor = buildMonitor({
+    remoteAccounts: [
+      remoteAccount({
+        id: 1,
+        email: 'limited@test.local',
+        rateLimitedAt: new Date().toISOString(),
+        resetAt: new Date(Date.now() + 3600_000).toISOString(),
+      }),
+    ],
+    monitorConfig: { replenish_mode: 'resource', initial_balance_target: 10 },
+  });
+
+  const view = await monitor.runCheck();
+
+  assert.equal(view.last_result.fleet_initial_balance, 20);
+  assert.equal(view.last_result.uploaded, 0);
+});
+
+// ---- 巡检余额刷新节流 ----
+
+test('巡检余额刷新：距上次查询不足间隔的号跳过，0=每轮都查', async () => {
+  const freshId = insertAccount(ctx.db, ctx.crypto, { email: 'fresh@test.local', tokens: { refresh_token: 'rt' } });
+  const staleId = insertAccount(ctx.db, ctx.crypto, { email: 'stale@test.local', tokens: { refresh_token: 'rt' } });
+  ctx.db.prepare('UPDATE accounts SET balance_checked_at=? WHERE id=?').run(new Date().toISOString(), freshId);
+  ctx.db.prepare('UPDATE accounts SET balance_checked_at=? WHERE id=?').run(
+    new Date(Date.now() - 2 * 3600_000).toISOString(),
+    staleId,
+  );
+  const monitor = buildMonitor({
+    monitorConfig: { refresh_balance: true, balance_refresh_interval_minutes: 60 },
+    remoteAccounts: [remoteAccount({ id: 1, email: 'fresh@test.local' }), remoteAccount({ id: 2, email: 'stale@test.local' })],
+  });
+
+  const view = await monitor.runCheck();
+
+  assert.equal(view.last_result.balance_queued, 1);
+  assert.equal(view.last_result.balance_skipped_fresh, 1);
+  assert.deepEqual(ctx.submitted.map((job) => job.accountId), [staleId]);
+
+  // 间隔 0 = 每轮都查（旧行为）
+  ctx.submitted.length = 0;
+  const everyRound = buildMonitor({
+    monitorConfig: { refresh_balance: true, balance_refresh_interval_minutes: 0 },
+    remoteAccounts: [remoteAccount({ id: 1, email: 'fresh@test.local' })],
+  });
+  const view2 = await everyRound.runCheck();
+  assert.equal(view2.last_result.balance_queued, 1);
+  assert.equal(view2.last_result.balance_skipped_fresh, 0);
 });

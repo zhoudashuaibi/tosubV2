@@ -58,12 +58,17 @@ export function createSub2apiModule({ engine, logger }) {
     // 余额查询选路注入：号已上传 sub2api 时优先用其在远端绑定的代理（未上传仍走本机代理/直连）
     engine.setBalanceProxyResolver?.((accountId) => remoteSync.resolveSub2apiProxy(accountId));
 
-    // 引擎 hook：修复链路产物回传远端（refresh 成功，或 refresh 失败自动转的完整登录成功）
+    // 引擎 hook：修复链路产物回传远端（refresh 成功，或 refresh 失败自动转的完整登录成功）；
+    // 主池已上架号的手动完整登录重授也回传（新凭证 + 清错误 + 恢复调度，修复失败暂停保留的号由此复活）
     const previousHandler = engine.hooks.onTokensSaved;
     engine.hooks.onTokensSaved = async (job, runtime, tokens) => {
       await previousHandler?.(job, runtime, tokens);
+      if (!job.account_id) return;
       const isRepairChain = job.type === 'refresh' || (job.type === 'login' && job.resume_job_id);
-      if (isRepairChain && job.account_id) {
+      const row = db.prepare('SELECT pool, sub2api_account_id FROM accounts WHERE id = ?').get(job.account_id);
+      const mainReauth =
+        row?.pool === 'main' && row?.sub2api_account_id != null && Number.isInteger(Number(row.sub2api_account_id));
+      if ((isRepairChain || mainReauth) && job.account_id) {
         try {
           await monitor.pushRepairedCredentials(job.account_id);
         } catch (error) {
@@ -276,7 +281,11 @@ export function createSub2apiModule({ engine, logger }) {
         'max_repair_attempts',
         'auto_replenish',
         'refresh_balance',
+        'balance_refresh_interval_minutes',
         'reserve_threshold',
+        'replenish_mode',
+        'concurrency_target',
+        'initial_balance_target',
         'replenish_upload_order',
         'replenish_join_order',
         'pause_on_discard',
@@ -285,6 +294,18 @@ export function createSub2apiModule({ engine, logger }) {
         'rate_limit_patterns',
       ]) {
         if (body[key] !== undefined) nextMonitor[key] = body[key];
+      }
+      // resource 口径校验：至少一项目标 > 0；并发目标 > 0 时必须先配置上传默认每号并发，
+      // 否则在架号并发恒计 0、缺口永远存在，会持续烧备用池
+      if (nextMonitor.replenish_mode === 'resource') {
+        const concTarget = Math.max(0, Number(nextMonitor.concurrency_target) || 0);
+        const balTarget = Math.max(0, Number(nextMonitor.initial_balance_target) || 0);
+        if (concTarget <= 0 && balTarget <= 0) {
+          throw errors.validation('resource 口径下「总并发保底」和「初始总余额保底」至少设置一项');
+        }
+        if (concTarget > 0 && !(Number(current.upload_defaults?.concurrency) > 0)) {
+          throw errors.validation('设置总并发保底前，请先在「上传默认」中配置每号并发');
+        }
       }
       app.settings.set(CONFIG_KEY, { ...current, monitor: nextMonitor });
       monitor.startIfEnabled();

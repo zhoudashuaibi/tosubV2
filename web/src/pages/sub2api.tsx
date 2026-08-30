@@ -150,6 +150,10 @@ export function Sub2ApiPage() {
   const [replenishUploadOrder, setReplenishUploadOrder] = useState('balance_asc');
   const [replenishJoinOrder, setReplenishJoinOrder] = useState('balance_desc');
   const [reserveThreshold, setReserveThreshold] = useState('10');
+  const [replenishMode, setReplenishMode] = useState<'count' | 'resource'>('count');
+  const [concurrencyTarget, setConcurrencyTarget] = useState('0');
+  const [initialBalanceTarget, setInitialBalanceTarget] = useState('0');
+  const [balanceRefreshInterval, setBalanceRefreshInterval] = useState('60');
   const [cooldownMin, setCooldownMin] = useState('5');
   const [rateLimitThreshold, setRateLimitThreshold] = useState('12');
   const [bannedPatterns, setBannedPatterns] = useState('');
@@ -167,6 +171,10 @@ export function Sub2ApiPage() {
       setReplenishUploadOrder(m.replenish_upload_order ?? 'balance_asc');
       setReplenishJoinOrder(m.replenish_join_order ?? 'balance_desc');
       setReserveThreshold(String(m.reserve_threshold ?? 10));
+      setReplenishMode(m.replenish_mode === 'resource' ? 'resource' : 'count');
+      setConcurrencyTarget(String(m.concurrency_target ?? 0));
+      setInitialBalanceTarget(String(m.initial_balance_target ?? 0));
+      setBalanceRefreshInterval(String(m.balance_refresh_interval_minutes ?? 60));
       setCooldownMin(String(m.cooldown_minutes ?? 5));
       setRateLimitThreshold(String(m.rate_limit_reset_threshold_hours ?? 12));
       setBannedPatterns((m.banned_patterns ?? []).join('\n'));
@@ -182,7 +190,11 @@ export function Sub2ApiPage() {
     max_repair_attempts: Number(maxRepair) || 2,
     auto_replenish: autoReplenish,
     refresh_balance: refreshBalance,
+    balance_refresh_interval_minutes: Number(balanceRefreshInterval) || 0,
     reserve_threshold: Number(reserveThreshold) || 10,
+    replenish_mode: replenishMode,
+    concurrency_target: Number(concurrencyTarget) || 0,
+    initial_balance_target: Number(initialBalanceTarget) || 0,
     replenish_upload_order: replenishUploadOrder,
     replenish_join_order: replenishJoinOrder,
     pause_on_discard: true,
@@ -386,7 +398,7 @@ export function Sub2ApiPage() {
               : monitor?.last_check_at
                 ? `上次巡检 ${formatRelativeTime(monitor.last_check_at)} · ${
                     monitor.last_result
-                      ? `上轮：扫描 ${monitor.last_result.scanned ?? 0} / 异常 ${monitor.last_result.error_accounts} / 限流 ${monitor.last_result.rate_limited ?? 0} / 待辅证 ${monitor.last_result.ban_unconfirmed ?? 0} / 废弃 ${monitor.last_result.discarded} / 修复中 ${monitor.last_result.repairing} / 上传 ${monitor.last_result.uploaded ?? 0} / 补号 ${monitor.last_result.replenished}${monitor.last_result.available_count != null ? ` / 可用 ${monitor.last_result.available_count}` : ''}${monitor.last_result.stock_count != null ? ` / 主池库存 ${monitor.last_result.stock_count}` : ''}`
+                      ? `上轮：扫描 ${monitor.last_result.scanned ?? 0} / 异常 ${monitor.last_result.error_accounts} / 限流 ${monitor.last_result.rate_limited ?? 0} / 待辅证 ${monitor.last_result.ban_unconfirmed ?? 0} / 废弃 ${monitor.last_result.discarded} / 修复中 ${monitor.last_result.repairing} / 上传 ${monitor.last_result.uploaded ?? 0} / 补号 ${monitor.last_result.replenished}${monitor.last_result.available_count != null ? ` / 可用 ${monitor.last_result.available_count}` : ''}${monitor.last_result.stock_count != null ? ` / 主池库存 ${monitor.last_result.stock_count}` : ''}${monitor.last_result.fleet_concurrency != null ? ` / 在架并发 ${monitor.last_result.fleet_concurrency}` : ''}${monitor.last_result.fleet_initial_balance != null ? ` / 初始余额 $${monitor.last_result.fleet_initial_balance}` : ''}`
                       : '暂无结果'
                   }`
                 : '尚未巡检'}
@@ -416,10 +428,12 @@ export function Sub2ApiPage() {
               <Label>修复失败上限</Label>
               <Input value={maxRepair} onChange={(e) => setMaxRepair(e.target.value)} />
             </div>
-            <div className="space-y-1.5">
-              <Label>保底数量（sub2api / 主池库存）</Label>
-              <Input value={reserveThreshold} onChange={(e) => setReserveThreshold(e.target.value)} />
-            </div>
+            {replenishMode !== 'resource' && (
+              <div className="space-y-1.5">
+                <Label>保底数量（sub2api / 主池库存）</Label>
+                <Input value={reserveThreshold} onChange={(e) => setReserveThreshold(e.target.value)} />
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label>限流废弃阈值（小时）</Label>
               <Input value={rateLimitThreshold} onChange={(e) => setRateLimitThreshold(e.target.value)} />
@@ -436,10 +450,50 @@ export function Sub2ApiPage() {
             <Switch checked={refreshBalance} onCheckedChange={setRefreshBalance} />
             巡检时刷新已上传号的余额（优先经 sub2api 绑定代理查询）
           </label>
+          {refreshBalance && (
+            <div className="ml-6 max-w-[240px] space-y-1.5">
+              <Label>余额刷新间隔（分钟，0=每轮）</Label>
+              <Input value={balanceRefreshInterval} onChange={(e) => setBalanceRefreshInterval(e.target.value)} />
+            </div>
+          )}
           <label className="flex items-center gap-2 text-sm">
             <Switch checked={autoReplenish} onCheckedChange={setAutoReplenish} />
-            低于保底自动补号：sub2api 缺号优先上传主池库存，主池库存低于保底再从备用池登录补入
+            {replenishMode === 'resource'
+              ? '低于保底自动补号（并发+余额口径）：总并发或初始总余额不达标先上传主池库存，库存资源仍不足再从备用池登录补入'
+              : '低于保底自动补号：sub2api 缺号优先上传主池库存，主池库存低于保底再从备用池登录补入'}
           </label>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>补号口径</Label>
+              <Select value={replenishMode} onValueChange={(v) => setReplenishMode(v === 'resource' ? 'resource' : 'count')}>
+                <SelectTrigger className="w-full" aria-label="补号口径">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="count">按账号数量</SelectItem>
+                    <SelectItem value="resource">按并发 + 余额</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
+            {replenishMode === 'resource' && (
+              <>
+                <div className="space-y-1.5">
+                  <Label>总并发保底（在架号并发之和）</Label>
+                  <Input value={concurrencyTarget} onChange={(e) => setConcurrencyTarget(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>初始总余额保底（$，登录时初始余额之和）</Label>
+                  <Input value={initialBalanceTarget} onChange={(e) => setInitialBalanceTarget(e.target.value)} />
+                </div>
+                <p className="text-xs text-muted-foreground md:col-span-2">
+                  统计范围为 sub2api 在架的本系统主池号（远端非 error，限流/暂停调度/待重授均计入），两项任一不达标即触发补号；
+                  初始余额不随使用减少，只有号被废弃才会拉低总和。使用总并发保底需先在「上传默认」中配置每号并发。
+                </p>
+              </>
+            )}
+          </div>
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-1.5">
               <Label>上传顺序（主池库存 → sub2api）</Label>

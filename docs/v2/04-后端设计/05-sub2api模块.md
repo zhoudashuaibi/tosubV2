@@ -104,7 +104,7 @@ flowchart TD
     B -- rate_limit_patterns --> D[移入废弃池 rate_limited_429]
     B -- 临时错误 --> E{auto_repair 开启且账号可修复?}
     E -- 是 --> F[强制重登 forceRelogin<br/>成功→PUT 新凭据+clear-error+schedulable]
-    E -- 否/失败 --> G[冷却 5 分钟<br/>累计失败≥max_repair_attempts → 移入废弃池 repair_failed]
+    E -- 否/失败 --> G[冷却 5 分钟<br/>累计失败≥max_repair_attempts → 暂停保留待重授<br/>needs_reauth + auto_repair_blocked + 暂停远端调度（不废弃）]
     B -- 不在本地 --> H[跳过（非本系统上传）]
     T2[补号检查] --> I{auto_replenish 开启<br/>且可用数 < threshold：本地主池号 × 远端状态<br/>（监控分组内、type=oauth、非 error、非限流中）<br/>+ reserve 池在途 joining}
     I -- 是 --> J[从备用池挑号 join-main<br/>（有余额优先）直至补足/池空]

@@ -31,11 +31,13 @@ export function createPools(db, crypto) {
         )
         .run(tokensEnc ?? null, now, balance ?? null, balanceCheckedAt ?? null, now, accountId);
       if (result.changes === 0) {
-        // 主号池账号重新授权成功（login/refresh 任务）
+        // 主号池账号重新授权成功（login/refresh 任务）：重授成功即解锁自动修复
+        // （清除连败计数与 auto_repair_blocked，needs_reauth 暂停保留的号恢复修复资格）
         const mainResult = db
           .prepare(
             `UPDATE accounts SET status='active', tokens_enc=?, last_login_at=?,
-               balance=COALESCE(?, balance), balance_checked_at=COALESCE(?, balance_checked_at), updated_at=?
+               balance=COALESCE(?, balance), balance_checked_at=COALESCE(?, balance_checked_at),
+               repair_fail_count=0, auto_repair_blocked=0, updated_at=?
              WHERE id=? AND pool='main'`,
           )
           .run(tokensEnc ?? null, now, balance ?? null, balanceCheckedAt ?? null, now, accountId);

@@ -38,6 +38,12 @@ export const DEFAULT_SETTINGS = {
       max_repair_attempts: 2,
       auto_replenish: false,
       reserve_threshold: 10,
+      // 补号触发口径：count=按账号数量（reserve_threshold）；resource=按 sub2api 在架号总并发 + 初始总余额
+      replenish_mode: 'count',
+      concurrency_target: 0,
+      initial_balance_target: 0,
+      // 巡检查余额（refresh_balance）最小间隔分钟数，0=每轮都查
+      balance_refresh_interval_minutes: 60,
       // 自动补号挑号顺序：主池库存上传（默认余额小优先）/ 备用池登录补入（默认金额大优先）
       replenish_upload_order: 'balance_asc',
       replenish_join_order: 'balance_desc',

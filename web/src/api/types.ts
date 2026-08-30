@@ -181,7 +181,15 @@ export interface Sub2ApiMonitorConfig {
   auto_replenish: boolean;
   /** 巡检时顺带刷新已上传号的余额（默认关，需显式开启） */
   refresh_balance?: boolean;
+  /** 巡检查余额最小间隔（分钟），0=每轮都查（默认 60） */
+  balance_refresh_interval_minutes?: number;
   reserve_threshold: number;
+  /** 补号触发口径：count=按账号数量（默认）；resource=按在架号总并发 + 初始总余额 */
+  replenish_mode?: 'count' | 'resource';
+  /** resource 口径：sub2api 在架号总并发保底 */
+  concurrency_target?: number;
+  /** resource 口径：初始总余额保底（USD） */
+  initial_balance_target?: number;
   /** 自动补号挑号顺序：主池库存上传（默认 balance_asc 余额小优先） */
   replenish_upload_order?: UploadOrder;
   /** 自动补号挑号顺序：备用池登录补入（默认 balance_desc 金额大优先） */
@@ -218,6 +226,10 @@ export interface Sub2ApiMonitorLog {
     replenished?: number;
     available_count?: number | null;
     stock_count?: number | null;
+    balance_queued?: number;
+    balance_skipped_fresh?: number;
+    fleet_concurrency?: number;
+    fleet_initial_balance?: number;
   };
   items: Sub2ApiMonitorLogItem[];
 }
@@ -285,6 +297,9 @@ export interface Sub2ApiMonitorView {
     available_count?: number | null;
     stock_count?: number | null;
     balance_queued?: number;
+    balance_skipped_fresh?: number;
+    fleet_concurrency?: number;
+    fleet_initial_balance?: number;
     remote_sync?: { scanned?: number; linked?: number; unlinked?: number; status_updated?: number };
   } | null;
 }

@@ -9,13 +9,17 @@ import { uploadOrderExpr } from '../../lib/upload-order.js';
  *  - 拉全量监控分组账号 → error 账号分类（banned/rate_limit/临时错误）
  *  - OAuth 号限流不写 status=error，用 rate_limited_at 判定：重置时间超过阈值 → 移废弃池，否则保留观察
  *  - 401/会话过期 → 自动修复：有 refresh_token 先刷新（失败自动转完整登录），没有直接发完整登录；
- *    连续失败 max_repair_attempts 次才移 repair_failed
+ *    连续失败 max_repair_attempts 次暂停保留待重授（needs_reauth + 停自动修复 + 暂停远端调度，不再废弃）
  *  - 封禁关键词（deactivated/banned/suspended 等）→ 必须邮箱辅证证实才移废弃池；
  *    未证实只暂停远端调度保留观察，绝不凭远端一句错误信息直接废弃
- *  - 自动补号（同一保底阈值双重约束）：sub2api 可用数（本地主池 × 远端非 error/非限流 + 在途 joining）
- *    低于阈值 → 先从主池库存（未上传 sub2api 的 active 号，按 replenish_upload_order 排序）直接上传补缺口；
- *    主池库存（扣除本轮上传 + 在途登录）低于同一阈值 → 从备用池按 replenish_join_order 排序登录补入主池
- *    （每轮最多 3 个），下轮按需上传
+ *  - 自动补号（同一阈值双重约束，支持两种口径 replenish_mode）：
+ *    count（默认）：sub2api 可用数（本地主池 × 远端非 error/非限流 + 在途 joining）低于阈值 →
+ *      先从主池库存（未上传 sub2api 的 active 号，按 replenish_upload_order 排序）直接上传补缺口；
+ *      主池库存（扣除本轮上传 + 在途登录）低于同一阈值 → 从备用池按 replenish_join_order 排序登录补入主池
+ *      （每轮最多 3 个），下轮按需上传
+ *    resource：按 sub2api 在架号（本地主池 × 远端匹配、非 error，限流/暂停调度/待重授均计入）的
+ *      总并发与初始总余额计缺口（OR 语义），先按顺序上传库存补齐两缺口，库存资源 + 在途登录资源
+ *      仍不达标再从备用池登录补入（每轮最多 3 个）
  * 单实例互斥；每轮结果与每账号动作写 monitor_logs，保留最近 100 轮。
  */
 
@@ -68,7 +72,11 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
       max_repair_attempts: config.max_repair_attempts ?? 2,
       auto_replenish: Boolean(config.auto_replenish),
       refresh_balance: Boolean(config.refresh_balance),
+      balance_refresh_interval_minutes: config.balance_refresh_interval_minutes ?? 60,
       reserve_threshold: config.reserve_threshold ?? 10,
+      replenish_mode: config.replenish_mode === 'resource' ? 'resource' : 'count',
+      concurrency_target: config.concurrency_target ?? 0,
+      initial_balance_target: config.initial_balance_target ?? 0,
       replenish_upload_order: config.replenish_upload_order ?? 'balance_asc',
       replenish_join_order: config.replenish_join_order ?? 'balance_desc',
       rate_limit_reset_threshold_hours: config.rate_limit_reset_threshold_hours ?? 12,
@@ -283,7 +291,7 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
         }
 
         // 临时错误 → 自动重登修复
-        if (monitor.auto_repair !== false && tryAutoRepair(local, monitor)) {
+        if (monitor.auto_repair !== false && (await tryAutoRepair(local, monitor, remote))) {
           result.repairing += 1;
           items.push({ email, remote_id: remote?.id, action: 'repairing', reason: 'auto_repair', detail: errorMessage });
         } else {
@@ -292,12 +300,24 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
       }
 
       // 巡检可选刷新已上传号的余额（refresh_balance 配置项，默认关）：
-      // 走 balance 任务通道并发消化，选路优先 sub2api 绑定代理
+      // 走 balance 任务通道并发消化，选路优先 sub2api 绑定代理。
+      // balance_refresh_interval_minutes 节流：距上次查询不足间隔的号本轮跳过（0=每轮都查）
       if (monitor.refresh_balance) {
+        const balanceIntervalMs =
+          Math.max(0, Number(monitor.balance_refresh_interval_minutes ?? 60)) * 60_000;
         let balanceQueued = 0;
+        let balanceSkipped = 0;
         for (const { remote, local } of tracked) {
           if (client.accountRateLimit(remote).limited_now) continue; // 限流中的号不再打扰
           if (local.pool !== 'main' || !local.tokens_enc) continue;
+          if (
+            balanceIntervalMs > 0 &&
+            local.balance_checked_at &&
+            Date.now() - Date.parse(local.balance_checked_at) < balanceIntervalMs
+          ) {
+            balanceSkipped += 1;
+            continue;
+          }
           // 同账号活跃任务唯一索引：登录/修复/余额任一在途都留待下轮
           const active = db
             .prepare(`SELECT id FROM jobs WHERE account_id=? AND status IN ('queued','running','awaiting_input')`)
@@ -311,6 +331,7 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
           }
         }
         result.balance_queued = balanceQueued;
+        result.balance_skipped_fresh = balanceSkipped;
       }
 
       // 自动补号（级联：主池库存上传 + 备用池登录）
@@ -320,6 +341,8 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
         result.uploaded = replenish.uploaded;
         result.available_count = replenish.available;
         result.stock_count = replenish.stock_count;
+        if (replenish.fleet_concurrency != null) result.fleet_concurrency = replenish.fleet_concurrency;
+        if (replenish.fleet_initial_balance != null) result.fleet_initial_balance = replenish.fleet_initial_balance;
       }
 
       state.lastCheckAt = new Date().toISOString();
@@ -354,6 +377,28 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
     }
   }
 
+  /**
+   * 修复连败处置：不废弃，暂停保留待重授。
+   * 置 needs_reauth + auto_repair_blocked（阻止巡检继续自动修复），并暂停远端调度
+   * 避免 sub2api 拿失效凭证继续打流量。重授成功后由 joinSucceeded / pushRepairedCredentials 解锁。
+   */
+  async function parkForReauth(local, remoteId, detail) {
+    const now = new Date().toISOString();
+    const cas = db
+      .prepare(`UPDATE accounts SET status='needs_reauth', auto_repair_blocked=1, updated_at=? WHERE id=? AND pool='main'`)
+      .run(now, local.id);
+    if (cas.changes === 0) return false;
+    pools.recordEvent(local.id, 'repair_parked', { detail: String(detail || '').slice(0, 300) });
+    if (remoteId != null && Number.isInteger(Number(remoteId))) {
+      try {
+        await client.setSchedulable(Number(remoteId), false);
+      } catch (error) {
+        logger.warn({ accountId: local.id, err: error.message }, 'pause remote on repair parked failed');
+      }
+    }
+    return true;
+  }
+
   /** 封禁邮件辅证：证实才 confirmed=true；无检查器/缺凭据/出错一律视为未证实，绝不据此废弃。 */
   async function confirmBanByMail(local, source) {
     if (!banMailCheck?.check) return { confirmed: false, result: 'no_checker' };
@@ -378,8 +423,9 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
    * 自动修复资格：无活跃任务、未封禁、不在冷却期、修复失败次数未达上限。
    * 修复方式：有 refresh_token 先刷新（401 失败由引擎自动转完整登录）；
    * 没有 refresh_token 但凭据支持完整登录（密码/Outlook 取件/邮箱 API）→ 直接发完整登录。
+   * 修复连败达上限不再废弃：暂停保留待重授（见 parkForReauth）。
    */
-  function tryAutoRepair(local, monitor) {
+  async function tryAutoRepair(local, monitor, remote = null) {
     if (local.auto_repair_blocked) return false;
     if (local.pool !== 'main') return false;
     const active = db
@@ -388,9 +434,7 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
     if (active) return false;
     const maxAttempts = Number(monitor.max_repair_attempts) || 2;
     if ((local.repair_fail_count || 0) >= maxAttempts) {
-      try {
-        pools.moveToDiscard(local.id, 'repair_failed', `自动修复连续失败 ${local.repair_fail_count} 次`);
-      } catch {}
+      await parkForReauth(local, remote?.id ?? local.sub2api_account_id, `自动修复连续失败 ${local.repair_fail_count} 次`);
       return false;
     }
     const cooldownMs = Math.max(0, Number(monitor.cooldown_minutes ?? 5)) * 60_000;
@@ -419,14 +463,14 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
   /**
    * 自动修复任务终态回写（由引擎 onLoginFinished 钩子调用）：
    *  - 成功 → repair_fail_count 清零
-   *  - 失败 → 计数 +1，达到 max_repair_attempts 移 repair_failed
+   *  - 失败 → 计数 +1，达到 max_repair_attempts 暂停保留待重授（不再直接废弃）
    *  - refresh 失败已自动转完整登录的（followUpJobId）不计数，等派生登录任务的终态
    */
   function noteRepairOutcome(job, { ok, followUpJobId = null } = {}) {
     try {
       if (!job?.account_id || !['refresh', 'login'].includes(job.type)) return;
       const row = db
-        .prepare(`SELECT pool, last_auto_repair_at, repair_fail_count FROM accounts WHERE id=?`)
+        .prepare(`SELECT pool, last_auto_repair_at, repair_fail_count, sub2api_account_id FROM accounts WHERE id=?`)
         .get(job.account_id);
       if (!row || row.pool !== 'main' || !row.last_auto_repair_at) return;
       // 只统计自动修复链路（30 分钟内发起过修复）；手动授权不受影响
@@ -444,11 +488,9 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
       db.prepare('UPDATE accounts SET repair_fail_count=?, updated_at=? WHERE id=?').run(count, now, job.account_id);
       pools.recordEvent(job.account_id, 'repair_failed_attempt', { count, job_id: job.id });
       if (count >= maxAttempts) {
-        try {
-          pools.moveToDiscard(job.account_id, 'repair_failed', `自动修复连续失败 ${count} 次`);
-        } catch (error) {
-          logger.warn({ accountId: job.account_id, err: error.message }, 'repair_failed discard skipped');
-        }
+        parkForReauth({ id: job.account_id }, row.sub2api_account_id, `自动修复连续失败 ${count} 次`).catch((error) => {
+          logger.warn({ accountId: job.account_id, err: error.message }, 'repair park failed');
+        });
       }
     } catch (error) {
       logger.warn({ jobId: job?.id, err: error.message }, 'note repair outcome failed');
@@ -456,15 +498,11 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
   }
 
   /**
-   * 自动补号：以本地主池为准 × 远端实际状态联合计数，避免只看远端导致的计数虚高：
-   *  - 可用 = 本地 pool=main 的号在远端（监控分组内、type=oauth）非 error 且非限流中 + 在途 joining
-   *  - 第一段：可用低于保底阈值 → 优先把主池库存（未上传远端的 active 号，余额小优先）直接上传补缺口
-   *  - 第二段：主池库存（扣除本轮上传 + 在途 joining）低于同一阈值 → 从备用池登录补入主池（每轮最多 3 个），
-   *    不必等库存耗尽；下轮巡检再按需上传
-   *  - 已废弃号远端未删、他人上传的号、远端已被删除的本地号，一律不计入可用
+   * 自动补号入口：按 replenish_mode 分流（共用一次远端全量拉取与 email 索引）。
+   *  - count（默认）：以本地主池为准 × 远端实际状态联合计数，见 replenishByCount
+   *  - resource：按 sub2api 在架号总并发 + 初始总余额计缺口，见 replenishByResource
    */
   async function replenishIfNeeded(monitor, config, accounts = null, items = []) {
-    const threshold = Number(monitor.reserve_threshold) || 10;
     const groupIds = Array.isArray(config.group_ids) ? config.group_ids : [];
     try {
       const allAccounts = accounts ?? (await client.listAllOpenAiAccounts());
@@ -475,107 +513,267 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
         const email = client.accountEmail(remote);
         if (email) remoteByEmail.set(email, remote);
       }
-      const localMain = db.prepare(`SELECT email FROM accounts WHERE pool='main'`).all();
-      let activeCount = 0;
-      for (const row of localMain) {
-        const remote = remoteByEmail.get(String(row.email || '').toLowerCase());
-        if (!remote) continue;
-        if (String(remote.status || 'active') === 'error') continue;
-        if (client.accountRateLimit(remote).limited_now) continue;
-        activeCount += 1;
+      if (monitor.replenish_mode === 'resource') {
+        return await replenishByResource(monitor, config, remoteByEmail, items);
       }
-      const joining = db
-        .prepare(
-          `SELECT COUNT(*) AS n FROM accounts a
-           WHERE a.pool='reserve' AND a.status='joining'
-             AND EXISTS (SELECT 1 FROM jobs j WHERE j.account_id=a.id AND j.status IN ('queued','running','awaiting_input'))`,
-        )
-        .get().n;
-      const available = activeCount + joining;
-
-      // 主池库存：active、有 tokens、无活跃任务、未封禁，且远端尚不存在（按邮箱匹配，防重复上传）
-      const stock = db
-        .prepare(
-          `SELECT a.id, a.email FROM accounts a
-           WHERE a.pool='main' AND a.status='active' AND a.banned=0 AND a.tokens_enc IS NOT NULL
-             AND NOT EXISTS (
-               SELECT 1 FROM jobs j WHERE j.account_id=a.id AND j.status IN ('queued','running','awaiting_input')
-             )
-           ORDER BY ${uploadOrderExpr(monitor.replenish_upload_order ?? 'balance_asc', 'main')}, a.id ASC`,
-        )
-        .all()
-        .filter((row) => !remoteByEmail.has(String(row.email || '').toLowerCase()));
-
-      // 第一段：sub2api 缺口 → 直接上传主池库存补足（按配置顺序挑号，默认余额小优先）
-      let uploaded = 0;
-      const gap = threshold - available;
-      if (gap > 0 && stock.length && uploader) {
-        const targets = stock.slice(0, gap);
-        try {
-          const outcome = await uploader.uploadAccounts(
-            targets.map((row) => row.id),
-            {},
-          );
-          uploaded = Number(outcome?.created || 0) + Number(outcome?.updated || 0);
-          const failedById = new Map((outcome?.failed || []).map((fail) => [fail.id, fail]));
-          for (const row of targets) {
-            const fail = failedById.get(row.id);
-            items.push(
-              fail
-                ? {
-                    email: row.email,
-                    remote_id: null,
-                    action: 'upload_failed',
-                    reason: 'replenish',
-                    detail: String(fail.error || '').slice(0, 300),
-                  }
-                : {
-                    email: row.email,
-                    remote_id: null,
-                    action: 'uploaded',
-                    reason: 'replenish',
-                    detail: `可用 ${available} 低于 ${threshold}，从主池库存上传`,
-                  },
-            );
-          }
-        } catch (error) {
-          logger.warn({ err: error.message }, 'replenish upload failed');
-        }
-      }
-
-      // 第二段：主池库存（扣除本轮上传 + 在途 joining）低于同一阈值 → 从备用池登录补入（每轮最多 3 个，不必等库存耗尽）
-      let replenished = 0;
-      const remainingStock = Math.max(0, stock.length - uploaded) + joining;
-      if (remainingStock < threshold) {
-        // 按金额排序时保留 has_balance 优先（余额未知的排最后），默认金额大优先
-        const joinOrder = monitor.replenish_join_order ?? 'balance_desc';
-        const balancePrefix = String(joinOrder).startsWith('time') ? '' : 'has_balance DESC, ';
-        const candidates = db
-          .prepare(
-            `SELECT a.id FROM accounts a WHERE a.pool='reserve' AND a.banned=0
-               AND a.status IN ('mail_pending','mail_failed','mail_ok')
-             ORDER BY ${balancePrefix}${uploadOrderExpr(joinOrder, 'reserve')}, a.id ASC LIMIT ?`,
-          )
-          .all(Math.min(3, threshold - remainingStock));
-        for (const candidate of candidates) {
-          const now = new Date().toISOString();
-          const tx = db.transaction(() => {
-            const cas = db
-              .prepare(`UPDATE accounts SET status='joining', updated_at=? WHERE id=? AND pool='reserve' AND status != 'joining'`)
-              .run(now, candidate.id);
-            if (cas.changes === 0) return;
-            pools.recordEvent(candidate.id, 'join_started', { source: 'monitor_replenish' });
-            engine.submitJob({ accountId: candidate.id, type: 'login', note: '自动补号' });
-          });
-          tx();
-        }
-        replenished = candidates.length;
-      }
-      return { replenished, uploaded, available, stock_count: remainingStock };
+      return await replenishByCount(monitor, config, remoteByEmail, items);
     } catch (error) {
       logger.warn({ err: error.message }, 'replenish check failed');
       return { replenished: 0, uploaded: 0, available: null, stock_count: null };
     }
+  }
+
+  /**
+   * count 口径补号（历史行为）：以本地主池为准 × 远端实际状态联合计数，避免只看远端导致的计数虚高：
+   *  - 可用 = 本地 pool=main 的号在远端（监控分组内、type=oauth）非 error 且非限流中 + 在途 joining
+   *  - 第一段：可用低于保底阈值 → 优先把主池库存（未上传远端的 active 号，余额小优先）直接上传补缺口
+   *  - 第二段：主池库存（扣除本轮上传 + 在途 joining）低于同一阈值 → 从备用池登录补入主池（每轮最多 3 个），
+   *    不必等库存耗尽；下轮巡检再按需上传
+   *  - 已废弃号远端未删、他人上传的号、远端已被删除的本地号，一律不计入可用
+   */
+  async function replenishByCount(monitor, config, remoteByEmail, items) {
+    const threshold = Number(monitor.reserve_threshold) || 10;
+    const localMain = db.prepare(`SELECT email FROM accounts WHERE pool='main'`).all();
+    let activeCount = 0;
+    for (const row of localMain) {
+      const remote = remoteByEmail.get(String(row.email || '').toLowerCase());
+      if (!remote) continue;
+      if (String(remote.status || 'active') === 'error') continue;
+      if (client.accountRateLimit(remote).limited_now) continue;
+      activeCount += 1;
+    }
+    const joining = countJoiningReserve();
+    const available = activeCount + joining;
+
+    // 主池库存：active、有 tokens、无活跃任务、未封禁，且远端尚不存在（按邮箱匹配，防重复上传）
+    const stock = loadMainStock(remoteByEmail, monitor);
+
+    // 第一段：sub2api 缺口 → 直接上传主池库存补足（按配置顺序挑号，默认余额小优先）
+    let uploaded = 0;
+    const gap = threshold - available;
+    if (gap > 0 && stock.length && uploader) {
+      const targets = stock.slice(0, gap);
+      try {
+        const outcome = await uploader.uploadAccounts(
+          targets.map((row) => row.id),
+          {},
+        );
+        uploaded = Number(outcome?.created || 0) + Number(outcome?.updated || 0);
+        const failedById = new Map((outcome?.failed || []).map((fail) => [fail.id, fail]));
+        for (const row of targets) {
+          const fail = failedById.get(row.id);
+          items.push(
+            fail
+              ? {
+                  email: row.email,
+                  remote_id: null,
+                  action: 'upload_failed',
+                  reason: 'replenish',
+                  detail: String(fail.error || '').slice(0, 300),
+                }
+              : {
+                  email: row.email,
+                  remote_id: null,
+                  action: 'uploaded',
+                  reason: 'replenish',
+                  detail: `可用 ${available} 低于 ${threshold}，从主池库存上传`,
+                },
+          );
+        }
+      } catch (error) {
+        logger.warn({ err: error.message }, 'replenish upload failed');
+      }
+    }
+
+    // 第二段：主池库存（扣除本轮上传 + 在途 joining）低于同一阈值 → 从备用池登录补入（每轮最多 3 个，不必等库存耗尽）
+    let replenished = 0;
+    const remainingStock = Math.max(0, stock.length - uploaded) + joining;
+    if (remainingStock < threshold) {
+      replenished = submitReserveJoins(monitor.replenish_join_order ?? 'balance_desc', Math.min(3, threshold - remainingStock));
+    }
+    return { replenished, uploaded, available, stock_count: remainingStock };
+  }
+
+  /** 主池库存：active、有 tokens、无活跃任务、未封禁，且远端尚不存在（按邮箱匹配，防重复上传）。 */
+  function loadMainStock(remoteByEmail, monitor) {
+    return db
+      .prepare(
+        `SELECT a.id, a.email, a.initial_balance, a.balance FROM accounts a
+         WHERE a.pool='main' AND a.status='active' AND a.banned=0 AND a.tokens_enc IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM jobs j WHERE j.account_id=a.id AND j.status IN ('queued','running','awaiting_input')
+           )
+         ORDER BY ${uploadOrderExpr(monitor.replenish_upload_order ?? 'balance_asc', 'main')}, a.id ASC`,
+      )
+      .all()
+      .filter((row) => !remoteByEmail.has(String(row.email || '').toLowerCase()));
+  }
+
+  /** 在途 joining：备用池已发起登录且有活跃任务的号数。 */
+  function countJoiningReserve() {
+    return db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM accounts a
+         WHERE a.pool='reserve' AND a.status='joining'
+           AND EXISTS (SELECT 1 FROM jobs j WHERE j.account_id=a.id AND j.status IN ('queued','running','awaiting_input'))`,
+      )
+      .get().n;
+  }
+
+  /** 备用池选号登录补入（两口径共用）：CAS 置 joining + 发登录任务，返回发起数。 */
+  function submitReserveJoins(joinOrder, limit) {
+    // 按金额排序时保留 has_balance 优先（余额未知的排最后），默认金额大优先
+    const balancePrefix = String(joinOrder).startsWith('time') ? '' : 'has_balance DESC, ';
+    const candidates = db
+      .prepare(
+        `SELECT a.id FROM accounts a WHERE a.pool='reserve' AND a.banned=0
+           AND a.status IN ('mail_pending','mail_failed','mail_ok')
+         ORDER BY ${balancePrefix}${uploadOrderExpr(joinOrder, 'reserve')}, a.id ASC LIMIT ?`,
+      )
+      .all(Math.max(0, Number(limit) || 0));
+    for (const candidate of candidates) {
+      const now = new Date().toISOString();
+      const tx = db.transaction(() => {
+        const cas = db
+          .prepare(`UPDATE accounts SET status='joining', updated_at=? WHERE id=? AND pool='reserve' AND status != 'joining'`)
+          .run(now, candidate.id);
+        if (cas.changes === 0) return;
+        pools.recordEvent(candidate.id, 'join_started', { source: 'monitor_replenish' });
+        engine.submitJob({ accountId: candidate.id, type: 'login', note: '自动补号' });
+      });
+      tx();
+    }
+    return candidates.length;
+  }
+
+  /** 每号并发取值：远端记录 concurrency > 上传默认并发 > 0（未配置时该号不计入并发口径）。 */
+  function accountConcurrency(remote, defaultConcurrency) {
+    const c = Number(remote?.concurrency);
+    if (Number.isFinite(c) && c > 0) return c;
+    return Number.isFinite(defaultConcurrency) && defaultConcurrency > 0 ? defaultConcurrency : 0;
+  }
+
+  /** 贡献口径的初始余额：initial_balance 为空回退 balance（老数据），再为空计 0。 */
+  function accountInitialBalance(row) {
+    const b = Number(row.initial_balance ?? row.balance);
+    return Number.isFinite(b) ? b : 0;
+  }
+
+  /**
+   * sub2api 在架号资源统计（resource 口径）：本地主池 × 远端匹配（oauth、监控分组内）且远端非 error。
+   * 限流中/暂停调度/待重授均计入：限流号按现有巡检逻辑要么短期恢复要么被废弃（废弃后自然掉出统计）；
+   * 待重授号的资产还在，重授成功自动回到统计。
+   */
+  function fleetResourceStats(remoteByEmail, defaultConcurrency) {
+    const localMain = db.prepare(`SELECT email, initial_balance, balance FROM accounts WHERE pool='main'`).all();
+    let concurrency = 0;
+    let initialBalance = 0;
+    let count = 0;
+    for (const row of localMain) {
+      const remote = remoteByEmail.get(String(row.email || '').toLowerCase());
+      if (!remote) continue;
+      if (String(remote.status || 'active') === 'error') continue;
+      concurrency += accountConcurrency(remote, defaultConcurrency);
+      initialBalance += accountInitialBalance(row);
+      count += 1;
+    }
+    return { concurrency, initialBalance, count };
+  }
+
+  /**
+   * resource 口径补号：不按号的数量，按 sub2api 在架号的总并发与初始总余额（OR 语义）计缺口。
+   *  - 第一段：按 replenish_upload_order 顺序遍历主池库存，逐个累加（并发，初始余额）贡献，
+   *    两个缺口都补齐即停，选中的号一次性批量上传
+   *  - 第二段：剩余库存 + 在途 joining 的资源贡献仍不达标 → 从备用池登录补入（每轮最多 3 个）
+   * 已知行为：备用池号初始余额多数未知（按 0 保守计）时，余额缺口会驱动持续补号直到达标，每轮 3 个上限兜底。
+   */
+  async function replenishByResource(monitor, config, remoteByEmail, items) {
+    const defaultConcurrency = Number(config?.upload_defaults?.concurrency);
+    const concTarget = Math.max(0, Number(monitor.concurrency_target) || 0);
+    const balTarget = Math.max(0, Number(monitor.initial_balance_target) || 0);
+    const fleet = fleetResourceStats(remoteByEmail, defaultConcurrency);
+    let gapConc = Math.max(0, concTarget - fleet.concurrency);
+    let gapBal = Math.max(0, balTarget - fleet.initialBalance);
+
+    const stock = loadMainStock(remoteByEmail, monitor);
+
+    // 第一段：贪心选号直到两个缺口都补齐或库存耗尽
+    let uploaded = 0;
+    const targets = [];
+    if ((gapConc > 0 || gapBal > 0) && stock.length) {
+      let conc = gapConc;
+      let bal = gapBal;
+      for (const row of stock) {
+        if (conc <= 0 && bal <= 0) break;
+        targets.push(row);
+        conc = Math.max(0, conc - accountConcurrency(null, defaultConcurrency));
+        bal = Math.max(0, bal - accountInitialBalance(row));
+      }
+    }
+    if (targets.length && uploader) {
+      const fleetDesc = `并发 ${fleet.concurrency}/${concTarget}，初始余额 $${fleet.initialBalance.toFixed(2)}/${balTarget}`;
+      try {
+        const outcome = await uploader.uploadAccounts(
+          targets.map((row) => row.id),
+          {},
+        );
+        uploaded = Number(outcome?.created || 0) + Number(outcome?.updated || 0);
+        const failedById = new Map((outcome?.failed || []).map((fail) => [fail.id, fail]));
+        for (const row of targets) {
+          const fail = failedById.get(row.id);
+          items.push(
+            fail
+              ? {
+                  email: row.email,
+                  remote_id: null,
+                  action: 'upload_failed',
+                  reason: 'replenish',
+                  detail: String(fail.error || '').slice(0, 300),
+                }
+              : {
+                  email: row.email,
+                  remote_id: null,
+                  action: 'uploaded',
+                  reason: 'replenish',
+                  detail: `${fleetDesc}，从主池库存上传`,
+                },
+          );
+        }
+      } catch (error) {
+        logger.warn({ err: error.message }, 'replenish upload failed');
+      }
+    }
+
+    // 第二段：剩余库存 + 在途 joining 的资源贡献不达标 → 备用池登录补入（每轮最多 3 个）
+    let remainConc = 0;
+    let remainBal = 0;
+    for (const row of stock.slice(targets.length)) {
+      remainConc += accountConcurrency(null, defaultConcurrency);
+      remainBal += accountInitialBalance(row);
+    }
+    const joiningRows = db
+      .prepare(
+        `SELECT a.initial_balance, a.balance FROM accounts a
+         WHERE a.pool='reserve' AND a.status='joining'
+           AND EXISTS (SELECT 1 FROM jobs j WHERE j.account_id=a.id AND j.status IN ('queued','running','awaiting_input'))`,
+      )
+      .all();
+    for (const row of joiningRows) {
+      remainConc += accountConcurrency(null, defaultConcurrency);
+      remainBal += accountInitialBalance(row);
+    }
+    let replenished = 0;
+    if (remainConc < concTarget || remainBal < balTarget) {
+      replenished = submitReserveJoins(monitor.replenish_join_order ?? 'balance_desc', 3);
+    }
+    return {
+      replenished,
+      uploaded,
+      available: fleet.count,
+      stock_count: Math.max(0, stock.length - uploaded) + joiningRows.length,
+      fleet_concurrency: fleet.concurrency,
+      fleet_initial_balance: Number(fleet.initialBalance.toFixed(2)),
+    };
   }
 
   function inMonitoredGroups(account, groupIds) {
@@ -611,7 +809,8 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
     await client.updateAccount(remoteId, { credentials });
     await client.clearError(remoteId);
     await client.setSchedulable(remoteId, true);
-    db.prepare('UPDATE accounts SET repair_fail_count=0, updated_at=? WHERE id=?').run(
+    // 修复成功解锁：清除连败计数与自动修复封锁（needs_reauth 暂停保留的号由此恢复自动修复资格）
+    db.prepare('UPDATE accounts SET repair_fail_count=0, auto_repair_blocked=0, updated_at=? WHERE id=?').run(
       new Date().toISOString(),
       accountId,
     );
