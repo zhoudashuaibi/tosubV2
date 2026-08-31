@@ -283,6 +283,7 @@ export function createSub2apiModule({ engine, logger }) {
         'refresh_balance',
         'balance_refresh_interval_minutes',
         'reserve_threshold',
+        'main_stock_threshold',
         'replenish_mode',
         'concurrency_target',
         'initial_balance_target',

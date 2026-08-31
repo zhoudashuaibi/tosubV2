@@ -150,6 +150,7 @@ export function Sub2ApiPage() {
   const [replenishUploadOrder, setReplenishUploadOrder] = useState('balance_asc');
   const [replenishJoinOrder, setReplenishJoinOrder] = useState('balance_desc');
   const [reserveThreshold, setReserveThreshold] = useState('10');
+  const [mainStockThreshold, setMainStockThreshold] = useState('');
   const [replenishMode, setReplenishMode] = useState<'count' | 'resource'>('count');
   const [concurrencyTarget, setConcurrencyTarget] = useState('0');
   const [initialBalanceTarget, setInitialBalanceTarget] = useState('0');
@@ -171,6 +172,7 @@ export function Sub2ApiPage() {
       setReplenishUploadOrder(m.replenish_upload_order ?? 'balance_asc');
       setReplenishJoinOrder(m.replenish_join_order ?? 'balance_desc');
       setReserveThreshold(String(m.reserve_threshold ?? 10));
+      setMainStockThreshold(m.main_stock_threshold != null ? String(m.main_stock_threshold) : '');
       setReplenishMode(m.replenish_mode === 'resource' ? 'resource' : 'count');
       setConcurrencyTarget(String(m.concurrency_target ?? 0));
       setInitialBalanceTarget(String(m.initial_balance_target ?? 0));
@@ -192,6 +194,7 @@ export function Sub2ApiPage() {
     refresh_balance: refreshBalance,
     balance_refresh_interval_minutes: Number(balanceRefreshInterval) || 0,
     reserve_threshold: Number(reserveThreshold) || 10,
+    main_stock_threshold: mainStockThreshold === '' ? null : Math.max(0, Number(mainStockThreshold) || 0),
     replenish_mode: replenishMode,
     concurrency_target: Number(concurrencyTarget) || 0,
     initial_balance_target: Number(initialBalanceTarget) || 0,
@@ -415,7 +418,7 @@ export function Sub2ApiPage() {
             />
             启用监控巡检
           </label>
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-6">
             <div className="space-y-1.5">
               <Label>巡检间隔（分钟）</Label>
               <Input value={intervalMin} onChange={(e) => setIntervalMin(e.target.value)} />
@@ -430,15 +433,27 @@ export function Sub2ApiPage() {
             </div>
             {replenishMode !== 'resource' && (
               <div className="space-y-1.5">
-                <Label>保底数量（sub2api / 主池库存）</Label>
+                <Label>sub2api 保底数量</Label>
                 <Input value={reserveThreshold} onChange={(e) => setReserveThreshold(e.target.value)} />
               </div>
             )}
+            <div className="space-y-1.5">
+              <Label>主池库存保底（备用池 → 主池）</Label>
+              <Input
+                value={mainStockThreshold}
+                onChange={(e) => setMainStockThreshold(e.target.value)}
+                placeholder="沿用 sub2api 保底"
+              />
+            </div>
             <div className="space-y-1.5">
               <Label>限流废弃阈值（小时）</Label>
               <Input value={rateLimitThreshold} onChange={(e) => setRateLimitThreshold(e.target.value)} />
             </div>
           </div>
+          <p className="text-xs text-muted-foreground">
+            sub2api 保底管在架水位：低于先上传主池库存；主池库存保底管备用池登录补入水位（已登录未上传的号放久了会死，建议设小值）：0=
+            不从备用池自动补入，留空 = 沿用 sub2api 保底数量
+          </p>
           <p className="text-xs text-muted-foreground">
             远端限流（rate limit）重置时间距今超过阈值才移废弃池；短期限流（如 5h 窗口）保留主池等待自动恢复
           </p>
@@ -459,8 +474,8 @@ export function Sub2ApiPage() {
           <label className="flex items-center gap-2 text-sm">
             <Switch checked={autoReplenish} onCheckedChange={setAutoReplenish} />
             {replenishMode === 'resource'
-              ? '低于保底自动补号（并发+余额口径）：总并发或初始总余额不达标先上传主池库存，库存资源仍不足再从备用池登录补入'
-              : '低于保底自动补号：sub2api 缺号优先上传主池库存，主池库存低于保底再从备用池登录补入'}
+              ? '低于保底自动补号（并发+余额口径）：总并发或初始总余额不达标先上传主池库存，主池库存数量低于「主池库存保底」再从备用池登录补入'
+              : '低于保底自动补号：sub2api 缺号优先上传主池库存，主池库存低于「主池库存保底」再从备用池登录补入'}
           </label>
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-1.5">

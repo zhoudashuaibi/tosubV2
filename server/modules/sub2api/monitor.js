@@ -74,6 +74,7 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
       refresh_balance: Boolean(config.refresh_balance),
       balance_refresh_interval_minutes: config.balance_refresh_interval_minutes ?? 60,
       reserve_threshold: config.reserve_threshold ?? 10,
+      main_stock_threshold: config.main_stock_threshold ?? null,
       replenish_mode: config.replenish_mode === 'resource' ? 'resource' : 'count',
       concurrency_target: config.concurrency_target ?? 0,
       initial_balance_target: config.initial_balance_target ?? 0,
@@ -523,11 +524,16 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
     }
   }
 
+  /** 主池库存保底（备用池 → 主池水位）：null/未设置沿用 reserve_threshold（旧行为），0=不从备用池自动补入。 */
+  function mainStockThreshold(monitor) {
+    return Math.max(0, Number(monitor.main_stock_threshold ?? monitor.reserve_threshold) || 0);
+  }
+
   /**
    * count 口径补号（历史行为）：以本地主池为准 × 远端实际状态联合计数，避免只看远端导致的计数虚高：
    *  - 可用 = 本地 pool=main 的号在远端（监控分组内、type=oauth）非 error 且非限流中 + 在途 joining
    *  - 第一段：可用低于保底阈值 → 优先把主池库存（未上传远端的 active 号，余额小优先）直接上传补缺口
-   *  - 第二段：主池库存（扣除本轮上传 + 在途 joining）低于同一阈值 → 从备用池登录补入主池（每轮最多 3 个），
+   *  - 第二段：主池库存（扣除本轮上传 + 在途 joining）低于主池库存保底 → 从备用池登录补入主池（每轮最多 3 个），
    *    不必等库存耗尽；下轮巡检再按需上传
    *  - 已废弃号远端未删、他人上传的号、远端已被删除的本地号，一律不计入可用
    */
@@ -585,11 +591,12 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
       }
     }
 
-    // 第二段：主池库存（扣除本轮上传 + 在途 joining）低于同一阈值 → 从备用池登录补入（每轮最多 3 个，不必等库存耗尽）
+    // 第二段：主池库存（扣除本轮上传 + 在途 joining）低于主池库存保底 → 从备用池登录补入（每轮最多 3 个，不必等库存耗尽）
     let replenished = 0;
+    const stockThreshold = mainStockThreshold(monitor);
     const remainingStock = Math.max(0, stock.length - uploaded) + joining;
-    if (remainingStock < threshold) {
-      replenished = submitReserveJoins(monitor.replenish_join_order ?? 'balance_desc', Math.min(3, threshold - remainingStock));
+    if (remainingStock < stockThreshold) {
+      replenished = submitReserveJoins(monitor.replenish_join_order ?? 'balance_desc', Math.min(3, stockThreshold - remainingStock));
     }
     return { replenished, uploaded, available, stock_count: remainingStock };
   }
@@ -684,8 +691,8 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
    * resource 口径补号：不按号的数量，按 sub2api 在架号的总并发与初始总余额（OR 语义）计缺口。
    *  - 第一段：按 replenish_upload_order 顺序遍历主池库存，逐个累加（并发，初始余额）贡献，
    *    两个缺口都补齐即停，选中的号一次性批量上传
-   *  - 第二段：剩余库存 + 在途 joining 的资源贡献仍不达标 → 从备用池登录补入（每轮最多 3 个）
-   * 已知行为：备用池号初始余额多数未知（按 0 保守计）时，余额缺口会驱动持续补号直到达标，每轮 3 个上限兜底。
+   *  - 第二段：主池库存数量（扣除本轮上传 + 在途 joining）低于主池库存保底 → 从备用池登录补入（每轮最多 3 个），
+   *    与 count 口径同一水位；库存只按数量保底，不要求资源镜像整套在架目标（主池囤整套闲号一天就死完）
    */
   async function replenishByResource(monitor, config, remoteByEmail, items) {
     const defaultConcurrency = Number(config?.upload_defaults?.concurrency);
@@ -744,33 +751,18 @@ export function createMonitor({ db, crypto, client, getConfig, pools, engine, up
       }
     }
 
-    // 第二段：剩余库存 + 在途 joining 的资源贡献不达标 → 备用池登录补入（每轮最多 3 个）
-    let remainConc = 0;
-    let remainBal = 0;
-    for (const row of stock.slice(targets.length)) {
-      remainConc += accountConcurrency(null, defaultConcurrency);
-      remainBal += accountInitialBalance(row);
-    }
-    const joiningRows = db
-      .prepare(
-        `SELECT a.initial_balance, a.balance FROM accounts a
-         WHERE a.pool='reserve' AND a.status='joining'
-           AND EXISTS (SELECT 1 FROM jobs j WHERE j.account_id=a.id AND j.status IN ('queued','running','awaiting_input'))`,
-      )
-      .all();
-    for (const row of joiningRows) {
-      remainConc += accountConcurrency(null, defaultConcurrency);
-      remainBal += accountInitialBalance(row);
-    }
+    // 第二段：剩余库存 + 在途 joining 的数量低于主池库存保底 → 备用池登录补入（每轮最多 3 个）
+    const remainingStock = Math.max(0, stock.length - uploaded) + countJoiningReserve();
+    const stockThreshold = mainStockThreshold(monitor);
     let replenished = 0;
-    if (remainConc < concTarget || remainBal < balTarget) {
-      replenished = submitReserveJoins(monitor.replenish_join_order ?? 'balance_desc', 3);
+    if (remainingStock < stockThreshold) {
+      replenished = submitReserveJoins(monitor.replenish_join_order ?? 'balance_desc', Math.min(3, stockThreshold - remainingStock));
     }
     return {
       replenished,
       uploaded,
       available: fleet.count,
-      stock_count: Math.max(0, stock.length - uploaded) + joiningRows.length,
+      stock_count: remainingStock,
       fleet_concurrency: fleet.concurrency,
       fleet_initial_balance: Number(fleet.initialBalance.toFixed(2)),
     };

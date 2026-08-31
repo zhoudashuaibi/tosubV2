@@ -38,6 +38,8 @@ export const DEFAULT_SETTINGS = {
       max_repair_attempts: 2,
       auto_replenish: false,
       reserve_threshold: 10,
+      // 主池库存保底（备用池 → 主池登录补入水位）：null=沿用 reserve_threshold（旧行为），0=不从备用池自动补入
+      main_stock_threshold: null,
       // 补号触发口径：count=按账号数量（reserve_threshold）；resource=按 sub2api 在架号总并发 + 初始总余额
       replenish_mode: 'count',
       concurrency_target: 0,

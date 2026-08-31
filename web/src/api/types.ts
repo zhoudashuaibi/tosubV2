@@ -184,6 +184,8 @@ export interface Sub2ApiMonitorConfig {
   /** 巡检查余额最小间隔（分钟），0=每轮都查（默认 60） */
   balance_refresh_interval_minutes?: number;
   reserve_threshold: number;
+  /** 主池库存保底（备用池 → 主池登录补入水位）：null=沿用 reserve_threshold，0=不从备用池自动补入 */
+  main_stock_threshold?: number | null;
   /** 补号触发口径：count=按账号数量（默认）；resource=按在架号总并发 + 初始总余额 */
   replenish_mode?: 'count' | 'resource';
   /** resource 口径：sub2api 在架号总并发保底 */
@@ -282,6 +284,7 @@ export interface Sub2ApiMonitorView {
   auto_replenish: boolean;
   refresh_balance?: boolean;
   reserve_threshold: number;
+  main_stock_threshold?: number | null;
   last_check_at: string | null;
   next_check_at: string | null;
   last_error: string | null;

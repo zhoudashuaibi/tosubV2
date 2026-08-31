@@ -613,6 +613,80 @@ test('补号登录顺序：time_asc 按加入时间早优先', async () => {
   ]);
 });
 
+// ---- 主池库存保底拆分（main_stock_threshold） ----
+
+test('主池库存保底未设置时沿用 sub2api 保底（旧行为兼容）', async () => {
+  for (const email of ['r1@test.local', 'r2@test.local', 'r3@test.local']) {
+    insertAccount(ctx.db, ctx.crypto, { email, pool: 'reserve', status: 'mail_ok' });
+  }
+  const monitor = buildMonitor({ threshold: 2, remoteAccounts: [] });
+
+  const view = await monitor.runCheck();
+
+  // 可用 0、库存 0：缺口 2 但无库存可上传 → 库存 0 < 保底 2（回退），只发起 2 个登录
+  assert.equal(view.last_result.uploaded, 0);
+  assert.equal(view.last_result.replenished, 2);
+  assert.equal(ctx.submitted.length, 2);
+});
+
+test('主池库存保底 = 0：不从备用池自动补入', async () => {
+  for (const email of ['r1@test.local', 'r2@test.local']) {
+    insertAccount(ctx.db, ctx.crypto, { email, pool: 'reserve', status: 'mail_ok' });
+  }
+  const monitor = buildMonitor({ threshold: 5, remoteAccounts: [], monitorConfig: { main_stock_threshold: 0 } });
+
+  const view = await monitor.runCheck();
+
+  assert.equal(view.last_result.uploaded, 0);
+  assert.equal(view.last_result.replenished, 0);
+  assert.equal(ctx.submitted.length, 0);
+});
+
+test('主池库存保底低于 sub2api 保底：库存补完缺口后只按库存保底补', async () => {
+  insertAccount(ctx.db, ctx.crypto, { email: 'ok@test.local' });
+  for (const email of ['s1@test.local', 's2@test.local', 's3@test.local', 's4@test.local']) {
+    insertAccount(ctx.db, ctx.crypto, { email, tokens: { refresh_token: 'rt' } });
+  }
+  for (const email of ['r1@test.local', 'r2@test.local', 'r3@test.local']) {
+    insertAccount(ctx.db, ctx.crypto, { email, pool: 'reserve', status: 'mail_ok' });
+  }
+  const monitor = buildMonitor({
+    threshold: 10,
+    remoteAccounts: [remoteAccount({ id: 1, email: 'ok@test.local' })],
+    monitorConfig: { main_stock_threshold: 2 },
+  });
+
+  const view = await monitor.runCheck();
+
+  // 可用 1、缺口 9 → 库存 4 全部上传；剩余库存 0 < 保底 2 → 只补 2 个（共用阈值时会按缺口一直囤库存）
+  assert.equal(view.last_result.uploaded, 4);
+  assert.equal(view.last_result.replenished, 2);
+  assert.equal(view.last_result.stock_count, 0);
+  assert.equal(ctx.submitted.length, 2);
+});
+
+test('主池库存保底满足后不再囤库存（共用阈值时会继续补）', async () => {
+  insertAccount(ctx.db, ctx.crypto, { email: 'ok@test.local' });
+  for (const email of ['s1@test.local', 's2@test.local', 's3@test.local', 's4@test.local', 's5@test.local', 's6@test.local']) {
+    insertAccount(ctx.db, ctx.crypto, { email, tokens: { refresh_token: 'rt' } });
+  }
+  for (const email of ['r1@test.local', 'r2@test.local']) {
+    insertAccount(ctx.db, ctx.crypto, { email, pool: 'reserve', status: 'mail_ok' });
+  }
+  const monitor = buildMonitor({
+    threshold: 5,
+    remoteAccounts: [remoteAccount({ id: 1, email: 'ok@test.local' })],
+    monitorConfig: { main_stock_threshold: 2 },
+  });
+
+  const view = await monitor.runCheck();
+
+  // 可用 1、缺口 4 → 上传 4，剩余库存 2 ≥ 保底 2 → 不从备用池补（共用阈值时 2 < 5 会补 3 个）
+  assert.equal(view.last_result.uploaded, 4);
+  assert.equal(view.last_result.replenished, 0);
+  assert.equal(ctx.submitted.length, 0);
+});
+
 // ---- resource 补号口径（总并发 + 初始总余额） ----
 
 test('resource 口径：并发缺口触发库存上传，补齐即停', async () => {
@@ -697,6 +771,44 @@ test('resource 口径：限流中的号计入统计（限流按现有逻辑恢�
 
   assert.equal(view.last_result.fleet_initial_balance, 20);
   assert.equal(view.last_result.uploaded, 0);
+});
+
+test('resource 口径：第二段只看主池库存数量保底，不要求库存资源镜像在架目标', async () => {
+  insertAccount(ctx.db, ctx.crypto, { email: 'ok@test.local' });
+  insertAccount(ctx.db, ctx.crypto, { email: 's1@test.local', tokens: { refresh_token: 'rt' } });
+  insertAccount(ctx.db, ctx.crypto, { email: 's2@test.local', tokens: { refresh_token: 'rt' } });
+  insertAccount(ctx.db, ctx.crypto, { email: 'r1@test.local', pool: 'reserve', status: 'mail_ok' });
+  const monitor = buildMonitor({
+    remoteAccounts: [remoteAccount({ id: 1, email: 'ok@test.local', concurrency: 4 })],
+    monitorConfig: { replenish_mode: 'resource', concurrency_target: 10, main_stock_threshold: 1 },
+    uploadDefaults: { concurrency: 3 },
+  });
+
+  const view = await monitor.runCheck();
+
+  // 在架并发 4、缺口 6 → 库存 2 个各贡献 3 恰好补齐；剩余库存 0 < 保底 1 → 只补 1 个
+  // （旧口径会比较库存资源与整套在架目标，0 < 10 固定补 3 个）
+  assert.equal(view.last_result.uploaded, 2);
+  assert.equal(view.last_result.replenished, 1);
+  assert.equal(ctx.submitted.length, 1);
+});
+
+test('resource 口径：主池库存保底 = 0 → 缺口仍在也不从备用池补入', async () => {
+  insertAccount(ctx.db, ctx.crypto, { email: 'ok@test.local' });
+  insertAccount(ctx.db, ctx.crypto, { email: 's1@test.local', tokens: { refresh_token: 'rt' } });
+  insertAccount(ctx.db, ctx.crypto, { email: 'r1@test.local', pool: 'reserve', status: 'mail_ok' });
+  const monitor = buildMonitor({
+    remoteAccounts: [remoteAccount({ id: 1, email: 'ok@test.local', concurrency: 4 })],
+    monitorConfig: { replenish_mode: 'resource', concurrency_target: 10, main_stock_threshold: 0 },
+    uploadDefaults: { concurrency: 3 },
+  });
+
+  const view = await monitor.runCheck();
+
+  // 缺口 6 > 库存贡献 3：上传后缺口仍在，但库存保底 0 → 不再烧备用池
+  assert.equal(view.last_result.uploaded, 1);
+  assert.equal(view.last_result.replenished, 0);
+  assert.equal(ctx.submitted.length, 0);
 });
 
 // ---- 巡检余额刷新节流 ----
