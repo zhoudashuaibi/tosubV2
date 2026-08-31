@@ -19,6 +19,8 @@ function setup() {
   const crypto = createCrypto({ dataDir, secretKeyEnv: 'test-secret', logger });
   const settings = createSettingsService(db, crypto, { logger });
   settings.ensureDefaults();
+  // 引擎流程测试沿用无代理直连；strict_proxy 拦截行为由专门用例覆盖
+  settings.set('engine.config', { ...settings.get('engine.config'), strict_proxy: false });
   const config = {
     dataDir,
     serverRoot: path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..'),
@@ -164,6 +166,66 @@ test('重启恢复：running 任务回 queued（attempt 保留）', async () => 
     assert.equal(row.status, 'queued');
     assert.equal(row.attempt, 3);
     assert.match(row.error, /重新排队/);
+  } finally {
+    db.close();
+    cleanupDir(dataDir);
+  }
+});
+
+test('strict_proxy 开启：无可用代理时登录任务不 spawn 直接失败', async () => {
+  const { dataDir, db, config, settings, pools } = setup();
+  settings.set('engine.config', { ...settings.get('engine.config'), strict_proxy: true });
+  try {
+    const engine = createJobsEngine({ config, db, logger });
+    const finished = [];
+    engine.hooks.onLoginFinished = (job, account, payload) => {
+      finished.push(payload);
+      if (!payload.ok) pools.joinFailed(job.account_id, { error: payload.message });
+    };
+
+    const accountId = createAccount(db);
+    engine.start();
+    const job = engine.submitJob({ accountId, type: 'login' });
+    const row = await waitFor(db, job.id, 'failed', 5000);
+
+    assert.match(row.error, /无可用代理/);
+    assert.ok(row.finished_at, '任务应有完成时间');
+    assert.equal(finished.length, 1);
+    assert.equal(finished[0].ok, false);
+    assert.equal(finished[0].code, 'NO_ALIVE_PROXY');
+    // 账号状态机按登录失败流转（reserve joining → mail_failed）
+    const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(accountId);
+    assert.equal(account.status, 'mail_failed');
+
+    await engine.shutdown();
+  } finally {
+    db.close();
+    cleanupDir(dataDir);
+  }
+});
+
+test('strict_proxy 开启：无可用代理时余额任务失败并记录 balance_error', async () => {
+  const { dataDir, db, crypto, config, settings } = setup();
+  settings.set('engine.config', { ...settings.get('engine.config'), strict_proxy: true });
+  try {
+    const accountId = createAccount(db, { email: 'balance@test.local' });
+    db.prepare('UPDATE accounts SET tokens_enc = ? WHERE id = ?').run(
+      crypto.encryptJson(
+        { access_token: 'at', refresh_token: 'rt', client_id: 'cid' },
+        'accounts.tokens_enc',
+      ),
+      accountId,
+    );
+    const engine = createJobsEngine({ config, db, logger });
+    engine.start();
+    const job = engine.submitJob({ accountId, type: 'balance' });
+    const row = await waitFor(db, job.id, 'failed', 5000);
+
+    assert.match(row.error, /无可用代理/);
+    const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(accountId);
+    assert.match(account.balance_error, /无可用代理/);
+
+    await engine.shutdown();
   } finally {
     db.close();
     cleanupDir(dataDir);

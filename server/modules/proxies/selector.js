@@ -4,7 +4,7 @@ import { maskProxyUrl } from '../../lib/sanitize.js';
  * 随机选路与失败降级记账。
  */
 export function createProxySelector(db, crypto) {
-  /** 随机选一条 alive 代理；无则本机直连。 */
+  /** 随机选一条 alive 代理；无则返回空（是否允许直连由引擎侧 strict_proxy 决定）。 */
   function pickRandomAliveProxy(excludeIds = []) {
     const rows = db.prepare(`SELECT id, url_enc FROM proxies WHERE status = 'alive'`).all();
     const candidates = excludeIds.length ? rows.filter((r) => !excludeIds.includes(r.id)) : rows;

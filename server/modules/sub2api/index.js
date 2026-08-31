@@ -20,6 +20,7 @@ export function createSub2apiModule({ engine, logger }) {
       crypto: app.crypto,
       client,
       getConfig: () => app.settings.get(CONFIG_KEY),
+      settingsGet: (key) => app.settings.get(key),
       dataDir: app.config.dataDir,
       proxySelector: app.proxySelector,
       logger,

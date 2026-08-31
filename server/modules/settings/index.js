@@ -17,6 +17,7 @@ export function createSettingsModule({ logger }) {
         max_concurrent_jobs: engineConfig.max_concurrent_jobs,
         job_timeout_minutes: engineConfig.job_timeout_minutes,
         proxy_fail_threshold: engineConfig.proxy_fail_threshold,
+        strict_proxy: engineConfig.strict_proxy !== false,
         join_auto_upload: Boolean(sub2api.join_auto_upload),
         sms: {
           active: sms.active || 'custom',
@@ -76,13 +77,16 @@ export function createSettingsModule({ logger }) {
       if (
         body.max_concurrent_jobs !== undefined ||
         body.job_timeout_minutes !== undefined ||
-        body.proxy_fail_threshold !== undefined
+        body.proxy_fail_threshold !== undefined ||
+        body.strict_proxy !== undefined
       ) {
         const current = app.settings.get('engine.config');
         const next = {
           max_concurrent_jobs: clampInt(body.max_concurrent_jobs, current.max_concurrent_jobs, 1, 100),
           job_timeout_minutes: clampInt(body.job_timeout_minutes, current.job_timeout_minutes, 1, 24 * 60),
           proxy_fail_threshold: clampInt(body.proxy_fail_threshold, current.proxy_fail_threshold, 1, 20),
+          strict_proxy:
+            body.strict_proxy !== undefined ? Boolean(body.strict_proxy) : current.strict_proxy !== false,
         };
         app.settings.set('engine.config', next);
       }

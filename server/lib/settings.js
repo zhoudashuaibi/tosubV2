@@ -13,6 +13,8 @@ export const DEFAULT_SETTINGS = {
     max_concurrent_jobs: 20,
     job_timeout_minutes: 30,
     proxy_fail_threshold: 3,
+    // 无可用代理时禁止本机直连（登录/查余额一律失败），服务器 IP 被上游拉黑的场景必须开启
+    strict_proxy: true,
   },
   'sub2api.config': {
     base_url: '',

@@ -408,6 +408,7 @@ export interface SettingsView {
   max_concurrent_jobs: number;
   job_timeout_minutes: number;
   proxy_fail_threshold: number;
+  strict_proxy: boolean;
   join_auto_upload: boolean;
   sms: {
     active: string;

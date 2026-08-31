@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/input';
 import { formatDateTime, formatRelativeTime } from '@/lib/utils';
 
@@ -53,6 +54,7 @@ export function SettingsPage() {
   const [maxJobs, setMaxJobs] = useState('');
   const [timeoutMin, setTimeoutMin] = useState('');
   const [failThreshold, setFailThreshold] = useState('');
+  const [strictProxy, setStrictProxy] = useState(true);
   useEffect(() => {
     if (settings) {
       setEndpoint(settings.outlook_fetch_endpoint);
@@ -60,6 +62,7 @@ export function SettingsPage() {
       setMaxJobs(String(settings.max_concurrent_jobs));
       setTimeoutMin(String(settings.job_timeout_minutes));
       setFailThreshold(String(settings.proxy_fail_threshold));
+      setStrictProxy(settings.strict_proxy !== false);
     }
   }, [settings]);
 
@@ -71,6 +74,7 @@ export function SettingsPage() {
         max_concurrent_jobs: Number(maxJobs),
         job_timeout_minutes: Number(timeoutMin),
         proxy_fail_threshold: Number(failThreshold),
+        strict_proxy: strictProxy,
       }),
     onSuccess: () => {
       toast.success('设置已保存');
@@ -202,6 +206,16 @@ export function SettingsPage() {
               <Input value={failThreshold} onChange={(e) => setFailThreshold(e.target.value)} />
             </div>
           </div>
+          <label className="flex items-start gap-3 rounded-md border p-3">
+            <Switch checked={strictProxy} onCheckedChange={setStrictProxy} className="mt-0.5" />
+            <span className="space-y-1 text-sm">
+              <span className="block font-medium">禁止无代理直连</span>
+              <span className="block text-xs text-muted-foreground">
+                开启后，代理池无可用代理时登录/查余额任务直接失败，绝不以本机 IP
+                直连上游（服务器 IP 已被上游拉黑时必须开启，否则一登录就封号）
+              </span>
+            </span>
+          </label>
           <Button onClick={() => saveSettings.mutate()} disabled={saveSettings.isPending}>
             {saveSettings.isPending && <Loader2 className="animate-spin" />}
             <Save className="h-4 w-4" />

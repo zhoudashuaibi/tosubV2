@@ -8,7 +8,7 @@ import path from 'node:path';
  * 注意：工厂参数 crypto 是应用加解密服务，Node crypto 模块用 nodeCrypto 别名避免遮蔽。
  */
 
-export function createUploader({ db, crypto, client, getConfig, dataDir, proxySelector, logger }) {
+export function createUploader({ db, crypto, client, getConfig, settingsGet, dataDir, proxySelector, logger }) {
   /** 读取账号当前导出文件（data/results/account-<id>.json）。 */
   function readAccountExport(accountId) {
     const exportPath = path.resolve(dataDir, 'results', `account-${accountId}.json`);
@@ -226,7 +226,7 @@ export function createUploader({ db, crypto, client, getConfig, dataDir, proxySe
     let balance = row.balance;
     if (balance === null || balance === undefined) {
       // 实时查一次余额（失败不阻断，保持原名）。此时号尚未上传 sub2api，
-      // 选路与登录一致：账号绑定代理 > 全局 alive 代理 > 直连
+      // 选路与登录一致：账号绑定代理 > 全局 alive 代理；无代理时受 strict_proxy 管控
       try {
         const tokens = crypto.tryDecryptJson(row.tokens_enc, 'accounts.tokens_enc') || {};
         if (!tokens.access_token) return;
@@ -237,6 +237,8 @@ export function createUploader({ db, crypto, client, getConfig, dataDir, proxySe
           credentials.proxy_url ||
           (proxySelector ? proxySelector.pickRandomAliveProxy()?.url : null) ||
           null;
+        // 无可用代理且开启禁止直连时跳过补查（保持原名上传），绝不以本机 IP 直连
+        if (!proxyUrl && settingsGet?.('engine.config')?.strict_proxy !== false) return;
         const result = await fetchChatgptCredits({
           accessToken: tokens.access_token,
           refreshToken: tokens.refresh_token,

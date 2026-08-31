@@ -128,6 +128,11 @@ export function createJobsEngine({ config, db, logger }) {
     return config.settingsGet?.('engine.config') || { max_concurrent_jobs: 20, job_timeout_minutes: 30 };
   }
 
+  /** 无可用代理时禁止本机直连（默认开启；旧库 engine.config 缺字段同样视为开启）。 */
+  function strictProxyEnabled() {
+    return engineConfig().strict_proxy !== false;
+  }
+
   function tick() {
     if (stopped) return;
     const maxJobs = Number(engineConfig().max_concurrent_jobs) || 20;
@@ -212,11 +217,14 @@ export function createJobsEngine({ config, db, logger }) {
       }
     }
 
-    // 未上传 sub2api：选路与登录一致：有可用代理先走代理（账号绑定代理 > 全局 alive 代理），无可用代理才本机直连。
-    // 代理连接失败/风控时换代理重试，重试耗尽直接失败，不悄悄回退本机。
+    // 未上传 sub2api：选路与登录一致：有可用代理先走代理（账号绑定代理 > 全局 alive 代理）。
+    // 无可用代理时受 strict_proxy 管控（默认禁止直连直接失败）；代理连接失败/风控时换代理重试，重试耗尽直接失败。
     const excludeIds = [];
     for (let attempt = 1; ; attempt += 1) {
       const proxy = selectProxyForJob(job, credentials, excludeIds);
+      if (!proxy.url && strictProxyEnabled()) {
+        throw Object.assign(new Error('无可用代理（已开启禁止直连）'), { code: 'NO_ALIVE_PROXY' });
+      }
       // 重试等场景可能残留 sub2api 标签：本机选路一律覆盖为空
       patchJob(job.id, { proxy_id: proxy.id, proxy_label: null });
       appendJobLog(job, `balance ${proxy.url ? `via local proxy #${proxy.id ?? '?'}` : 'direct (no local proxy)'}`);
@@ -288,6 +296,15 @@ export function createJobsEngine({ config, db, logger }) {
     const accountView = { ...account, credentials };
 
     const proxy = selectProxyForJob(job, credentials);
+    if (!proxy.url && strictProxyEnabled()) {
+      // 服务器 IP 一旦被上游拉黑，本机直连登录即封号：无可用代理时直接失败，绝不直连
+      const message = '无可用代理（已开启禁止直连），任务未启动';
+      appendJobLog(job, 'no alive proxy and strict_proxy on, refuse direct connection');
+      logger.warn({ jobId: job.id, accountId: job.account_id }, 'no alive proxy, strict_proxy on');
+      patchJob(job.id, { status: 'failed', error: message, finished_at: new Date().toISOString() });
+      hooks.onLoginFinished?.(stmt.getJob.get(job.id), accountView, { ok: false, code: 'NO_ALIVE_PROXY', message });
+      return stmt.getJob.get(job.id);
+    }
     patchJob(job.id, {
       status: 'running',
       proxy_id: proxy.id,
