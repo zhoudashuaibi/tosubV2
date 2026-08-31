@@ -36,6 +36,12 @@ export function registerErrorHandler(app) {
         error: { code: 'VALIDATION', message: '请求参数校验失败', details },
       });
     }
+    // Fastify 内容解析阶段的超限（如导入文件过大）：转成可读的 413 而不是 500
+    if (error?.statusCode === 413 || error?.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
+      return reply.status(413).send({
+        error: { code: 'BODY_TOO_LARGE', message: '请求内容过大，超出大小限制，请分批导入' },
+      });
+    }
     if (error instanceof AppError) {
       return reply.status(error.status).send({
         error: { code: error.code, message: error.message, ...error.extra },

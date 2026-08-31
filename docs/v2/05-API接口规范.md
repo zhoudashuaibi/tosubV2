@@ -149,6 +149,7 @@
 //        "force_discard": false, "force_remote": false }
 //      text 也兼容 tosubV2 跨实例导出（type: tosub2-accounts，带 tokens 依旧直入主号池）
 //      与 v1 四段行格式；twofa_text / passwords_text 为旧版增量补录参数，保留兼容（前端已并入 text）
+//      本路由单独放宽 bodyLimit 至 32MB（全局 2MB），单次约支持 2500 个账号；超限返回 413 BODY_TOO_LARGE
 // 201
 { "created": 25, "main_created": 0,
   "duplicates_in_main": ["e@b.com", "f@b.com"],

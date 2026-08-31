@@ -324,12 +324,15 @@ export function createAccountsModule({ engine, logger }) {
     app.post(
       '/api/v1/accounts/import',
       {
+        // sub2api 账号导出单个账号约 12KB（长 token + notes），批量导入放大请求体：
+        // 路由级单独放宽到 32MB（全局仍是 2MB），约支持单次 2500 个账号
+        bodyLimit: 32 * 1024 * 1024,
         schema: {
           body: {
             type: 'object',
             additionalProperties: false,
             properties: {
-              text: { type: 'string', maxLength: 2_000_000 },
+              text: { type: 'string', maxLength: 32_000_000 },
               twofa_text: { type: 'string', maxLength: 500_000 },
               passwords_text: { type: 'string', maxLength: 2_000_000 },
               force_discard: { type: 'boolean' },
