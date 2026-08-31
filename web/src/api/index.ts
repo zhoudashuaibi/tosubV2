@@ -77,8 +77,8 @@ export interface AccountFilter {
 export const accountsApi = {
   list: <T extends ReserveAccount | MainAccount | DiscardAccount>(pool: Pool, f: AccountFilter = {}) =>
     api<Paged<T> & { stats: Record<string, number> }>(`/accounts?pool=${pool}&${toQuery(f)}`),
-  import: (text: string, twofaText = '', passwordsText = '', opts: { force_discard?: boolean; force_remote?: boolean } = {}) =>
-    api<ImportResult>('/accounts/import', { json: { text, twofa_text: twofaText, passwords_text: passwordsText, ...opts } }),
+  import: (text: string, opts: { force_discard?: boolean; force_remote?: boolean } = {}) =>
+    api<ImportResult>('/accounts/import', { json: { text, ...opts } }),
   create: (body: Record<string, unknown>) =>
     api<{ account: MainAccount; job_id: string }>('/accounts', { json: body }),
   refreshMail: (id: number) => api<{ ok: boolean }>(`/accounts/${id}/refresh-mail`, { json: {} }),

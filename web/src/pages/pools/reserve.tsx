@@ -59,8 +59,8 @@ export function ReservePoolPage() {
   };
 
   const importMutation = useMutation({
-    mutationFn: ([text, twofaText, passwordsText]: [string, string, string]) =>
-      accountsApi.import(text, twofaText, passwordsText, { force_discard: forceDiscard, force_remote: forceRemote }),
+    mutationFn: (text: string) =>
+      accountsApi.import(text, { force_discard: forceDiscard, force_remote: forceRemote }),
     onSuccess: (result) => {
       setImportResult(result);
       if (result.created > 0) {
@@ -187,7 +187,7 @@ export function ReservePoolPage() {
         </Button>
         <Button size="sm" onClick={() => { setImportResult(null); setForceDiscard(false); setForceRemote(false); setImportOpen(true); }}>
           <Upload />
-          导入邮箱
+          导入账号
         </Button>
       </div>
 
@@ -202,8 +202,8 @@ export function ReservePoolPage() {
           <EmptyState
             icon={Inbox}
             title="备用号池为空"
-            description="导入 Outlook 邮箱账号（邮箱----密码----clientId----refresh_token），系统将自动初始化余额与封禁状态"
-            actionLabel="导入第一批邮箱"
+            description="导入 sub2api 账号导出 JSON（notes 含邮箱四段信息、ChatGPT 密码、两步验证），系统将自动补全凭据并初始化余额与封禁状态"
+            actionLabel="导入第一批账号"
             onAction={() => setImportOpen(true)}
           />
         ) : (
@@ -335,19 +335,29 @@ export function ReservePoolPage() {
       <ImportDialog
         open={importOpen}
         onOpenChange={setImportOpen}
-        title="导入 Outlook 邮箱"
-        placeholder={'邮箱----邮箱密码----clientId----refreshToken\n例：a@b.com----pass----9e5f94bc-e8a4-4e73-b8be-63364c29d753----M.C509_BL2...\n\n也可直接选择另一个 tosubV2 导出的账号 JSON 文件'}
-        twofaPlaceholder={'邮箱----2FA取件码（只有开启两步验证的账号需要填）\n例：a@b.com----CBCLDAV22HRBZUDELLKNRPK4L3YJ25IQ'}
-        passwordsPlaceholder={'ChatGPT 会话导出 JSON，密码在 meta.label 第 3 段；无密码账号可不管\n例：[{"meta":{"label":"a@b.com----xxxx----P@ssw0rd!"}}]'}
+        title="导入账号"
+        description="导入 sub2api 账号导出 JSON：邮箱四段信息、ChatGPT 密码、两步验证密钥一次性补全，全部进入备用号池"
+        placeholder={[
+          'sub2api 账号导出 JSON（accounts[].notes 携带全部凭据）：',
+          '{ "accounts": [{ "name": "a@b.com----…----GPT密码",',
+          '    "notes": "{\\"mailbox\\":{\\"password\\":\\"邮箱密码\\",\\"client_id\\":\\"…\\",\\"refresh_token\\":\\"…\\"},',
+          '              \\"gpt\\":{\\"password\\":\\"GPT密码\\"},\\"two_factor\\":{\\"enabled\\":true,\\"secret\\":\\"…\\"}}",',
+          '    "credentials": { "refresh_token": "…", "access_token": "…" } }] }',
+          '',
+          'notes.mailbox → 邮箱----密码----clientId----refreshToken（四段）',
+          'notes.gpt.password → ChatGPT 登录密码（勿与邮箱密码混淆）',
+          'notes.two_factor.enabled + secret → 两步验证',
+          'credentials 里的 OAuth tokens 忽略：加入主号池走本系统登录授权',
+        ].join('\n')}
         result={importResult}
         busy={importMutation.isPending}
-        onSubmit={(text, twofaText, passwordsText) => {
+        onSubmit={(text) => {
           if (importResult) {
             // 已有结果 → 点导入 = 带 force 重提交
             setForceDiscard(true);
             setForceRemote(true);
           }
-          importMutation.mutate([text, twofaText, passwordsText]);
+          importMutation.mutate(text);
         }}
       />
       {importResult && (importResult.duplicates_in_discard.length > 0 || importResult.duplicates_remote.length > 0) && (

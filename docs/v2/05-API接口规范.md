@@ -144,10 +144,13 @@
 ### POST /api/v1/accounts/import（备用池导入，弹窗数据一次返回）
 
 ```jsonc
-// 请求 { "text": "a@b.com----pwd----<uuid>----<refresh_token≥100>\n...",
+// 请求 { "text": "<sub2api 账号导出 JSON：accounts[].notes 携带 mailbox 四段/gpt 密码/two_factor 密钥；",
+//        "       credentials 里的 access/refresh token 忽略，条目全部进备用号池，加入主号池走 join-main>",
 //        "force_discard": false, "force_remote": false }
+//      text 也兼容 tosubV2 跨实例导出（type: tosub2-accounts，带 tokens 依旧直入主号池）
+//      与 v1 四段行格式；twofa_text / passwords_text 为旧版增量补录参数，保留兼容（前端已并入 text）
 // 201
-{ "created": 25,
+{ "created": 25, "main_created": 0,
   "duplicates_in_main": ["e@b.com", "f@b.com"],
   "duplicates_in_reserve": ["d@b.com"],
   "duplicates_in_discard": [{ "email": "g@b.com", "reason": "rate_limited_429" }],

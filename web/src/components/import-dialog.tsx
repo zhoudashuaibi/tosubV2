@@ -22,8 +22,7 @@ export function ImportDialog({
   onOpenChange,
   title,
   placeholder,
-  twofaPlaceholder,
-  passwordsPlaceholder,
+  description,
   submitLabel = '导入',
   onSubmit,
   result,
@@ -34,27 +33,21 @@ export function ImportDialog({
   onOpenChange: (open: boolean) => void;
   title: string;
   placeholder: string;
-  /** 传入即渲染第二个「2FA 取件码」输入框 */
-  twofaPlaceholder?: string;
-  /** 传入即渲染第三个「ChatGPT 密码文件」输入框 */
-  passwordsPlaceholder?: string;
+  /** 覆盖默认的「每行一条」说明（如 JSON 文件导入） */
+  description?: string;
   submitLabel?: string;
-  onSubmit: (text: string, twofaText: string, passwordsText: string) => void;
+  onSubmit: (text: string) => void;
   result: ImportResult | ProxyImportResult | null;
   onClosed?: () => void;
   busy?: boolean;
 }) {
   const [text, setText] = useState('');
-  const [twofaText, setTwofaText] = useState('');
-  const [passwordsText, setPasswordsText] = useState('');
   const [fileName, setFileName] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) {
       setText('');
-      setTwofaText('');
-      setPasswordsText('');
       setFileName('');
       onClosed?.();
     }
@@ -76,13 +69,11 @@ export function ImportDialog({
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>
-            {twofaPlaceholder ? '每行一条，支持以 # 开头的注释行；2FA 取件码与密码按邮箱自动关联' : '每行一条，支持以 # 开头的注释行'}
-          </DialogDescription>
+          <DialogDescription>{description || '每行一条，支持以 # 开头的注释行'}</DialogDescription>
         </DialogHeader>
         <div className="flex items-center justify-between gap-2">
           <div className="text-xs text-muted-foreground">
-            {fileName ? `已读取文件：${fileName}` : '可粘贴文本，或选择文件（如 tosubV2 导出的账号 JSON）'}
+            {fileName ? `已读取文件：${fileName}` : '可粘贴文本，或选择文件导入'}
           </div>
           <Button type="button" variant="outline" size="sm" className="h-6 shrink-0" onClick={() => fileRef.current?.click()}>
             <FileUp className="h-3.5 w-3.5" />
@@ -109,39 +100,12 @@ export function ImportDialog({
           className="min-h-[130px] font-mono text-xs"
           spellCheck={false}
         />
-        {twofaPlaceholder && (
-          <div className="space-y-1.5">
-            <div className="text-xs text-muted-foreground">2FA 取件码（可选，仅需要两步验证的账号）</div>
-            <Textarea
-              value={twofaText}
-              onChange={(e) => setTwofaText(e.target.value)}
-              placeholder={twofaPlaceholder}
-              className="min-h-[60px] font-mono text-xs"
-              spellCheck={false}
-            />
-          </div>
-        )}
-        {passwordsPlaceholder && (
-          <div className="space-y-1.5">
-            <div className="text-xs text-muted-foreground">ChatGPT 密码文件（可选，ChatGPT 会话导出 JSON）</div>
-            <Textarea
-              value={passwordsText}
-              onChange={(e) => setPasswordsText(e.target.value)}
-              placeholder={passwordsPlaceholder}
-              className="min-h-[60px] font-mono text-xs"
-              spellCheck={false}
-            />
-          </div>
-        )}
         {result && <ImportResultView result={result} />}
         <DialogFooter>
           <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={busy}>
             关闭
           </Button>
-          <Button
-            onClick={() => onSubmit(text, twofaText, passwordsText)}
-            disabled={busy || (!text.trim() && !twofaText.trim() && !passwordsText.trim())}
-          >
+          <Button onClick={() => onSubmit(text)} disabled={busy || !text.trim()}>
             {busy && <Loader2 className="animate-spin" />}
             {submitLabel}
           </Button>

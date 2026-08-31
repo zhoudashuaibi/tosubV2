@@ -3,7 +3,7 @@ import path from 'node:path';
 import { parsePagination } from '../../lib/db.js';
 import { errors } from '../../lib/http-errors.js';
 import { createPools } from './pools.js';
-import { parseImportLines, parseTwofaLines, parsePasswordFileText, parseTosub2Export, credentialsForImport } from './import.js';
+import { parseImportLines, parseTwofaLines, parsePasswordFileText, parseTosub2Export, parseSub2apiAccountsExport, credentialsForImport } from './import.js';
 import { buildTosub2ExportPayload, tosub2ExportFilename } from './export.js';
 import { buildExportFromTokens } from '../sub2api/upload.js';
 import { createMailInit } from './mail-init.js';
@@ -349,16 +349,38 @@ export function createAccountsModule({ engine, logger }) {
         if (!String(text).trim() && !String(twofa_text).trim() && !String(passwords_text).trim()) {
           throw errors.validation('导入内容不能为空');
         }
-        // tosubV2 导出文件（JSON 对象开头）走专用解析，字段比行格式更全（2FA 密钥/备注/封禁/余额）
+        // JSON 文件统一入口：tosubV2 跨实例导出（type: tosub2-accounts）或
+        // sub2api 账号导出（accounts 数组，notes 携带邮箱四段/GPT 密码/两步验证；
+        // credentials 里的 OAuth tokens 忽略，全部进备用池，加入主号池走 join-main 登录授权）
         let parsed;
         let invalidLines;
         let duplicatesInBatch;
-        if (String(text).trimStart().startsWith('{')) {
+        const trimmedText = String(text).trimStart();
+        const looksLikeJson = trimmedText.startsWith('{') || trimmedText.startsWith('[');
+        let jsonData = null;
+        if (looksLikeJson) {
+          try {
+            jsonData = JSON.parse(String(text));
+          } catch {
+            jsonData = null;
+          }
+        }
+        if (jsonData && !Array.isArray(jsonData) && jsonData.type === 'tosub2-accounts') {
           const tosub2 = parseTosub2Export(text);
           if (!tosub2.ok) throw errors.validation(`tosubV2 导出文件解析失败：${tosub2.error}`);
           parsed = tosub2.entries.map((entry) => ({ ok: true, ...entry }));
           invalidLines = tosub2.invalid;
           duplicatesInBatch = [];
+        } else if (jsonData && (Array.isArray(jsonData) || Array.isArray(jsonData.accounts))) {
+          const sub2api = parseSub2apiAccountsExport(text);
+          if (!sub2api.ok) throw errors.validation(`账号导出文件解析失败：${sub2api.error}`);
+          parsed = sub2api.entries.map((entry) => ({ ok: true, ...entry }));
+          invalidLines = sub2api.invalid;
+          duplicatesInBatch = [];
+        } else if (trimmedText.startsWith('{')) {
+          throw errors.validation(
+            'JSON 文件无法识别：需要 tosubV2 账号导出（type: tosub2-accounts）或 sub2api 账号导出（accounts 数组）',
+          );
         } else {
           parsed = parseImportLines(text);
           invalidLines = parsed.filter((r) => !r.ok && !r.duplicateInBatch).map(({ line, reason }) => ({ line, reason }));

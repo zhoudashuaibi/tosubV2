@@ -196,6 +196,111 @@ export function parseTosub2Export(text) {
 }
 
 /**
+ * sub2api 账号导出文件解析（{ accounts: [...] } 或裸数组，注册号交付格式）。
+ * accounts[].notes 是 JSON 字符串，携带账号全部凭据：
+ *  - mailbox：邮箱四段（bind_email / password 邮箱密码 / client_id / refresh_token）
+ *  - gpt.password：ChatGPT 登录密码（勿与 mailbox.password 邮箱密码混淆）
+ *  - two_factor.enabled + secret：两步验证开关与密钥（同时作为本地 TOTP 密钥与在线取件码）
+ * accounts[].credentials 的 access/refresh token 一律忽略：加入主号池必须走本系统
+ * 自己的登录授权（join-main），原登录态不带入；credentials.email 仅作邮箱兜底。
+ * 返回结构同 parseTosub2Export（tokens 恒为空），entries 直接复用导入路由的入库逻辑。
+ */
+export function parseSub2apiAccountsExport(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return { ok: false, error: '内容为空', entries: [], invalid: [] };
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: '不是合法的 JSON 文件', entries: [], invalid: [] };
+  }
+  const accounts = Array.isArray(data) ? data : Array.isArray(data?.accounts) ? data.accounts : null;
+  if (!accounts) {
+    return { ok: false, error: '不是 sub2api 账号导出文件（缺少 accounts 数组）', entries: [], invalid: [] };
+  }
+
+  const entries = [];
+  const invalid = [];
+  const seenInBatch = new Map();
+  accounts.forEach((item, index) => {
+    const lineNo = index + 1;
+    const account = item && typeof item === 'object' && !Array.isArray(item) ? item : {};
+    let notes = {};
+    try {
+      const parsedNotes = JSON.parse(String(account.notes || ''));
+      if (parsedNotes && typeof parsedNotes === 'object' && !Array.isArray(parsedNotes)) notes = parsedNotes;
+    } catch {
+      // notes 缺失或不是 JSON：退化为 name/credentials 兜底解析
+    }
+    const mailbox = notes.mailbox && typeof notes.mailbox === 'object' ? notes.mailbox : {};
+    const gpt = notes.gpt && typeof notes.gpt === 'object' ? notes.gpt : {};
+    const twoFactor = notes.two_factor && typeof notes.two_factor === 'object' ? notes.two_factor : {};
+    // name 形如 email----取件密码----GPT密码：notes 缺失时按段兜底
+    const nameParts = String(account.name || '').split('----').map((p) => p.trim());
+
+    const email = String(
+      mailbox.bind_email || mailbox.primary_email || account.credentials?.email || account.extra?.email || nameParts[0] || '',
+    )
+      .trim()
+      .toLowerCase();
+    if (!EMAIL_PATTERN.test(email)) {
+      invalid.push({ line: lineNo, reason: `邮箱格式错误：${maskRaw(mailbox.bind_email || account.credentials?.email || account.extra?.email || nameParts[0])}` });
+      return;
+    }
+
+    const password = String(mailbox.password || '').trim();
+    const clientId = String(mailbox.client_id || '').trim();
+    const refreshToken = String(mailbox.refresh_token || '').trim();
+    const chatgptPassword = String(gpt.password || (nameParts.length >= 3 ? nameParts[2] : '')).trim();
+    const twoFactorEnabled = twoFactor.enabled === true || twoFactor.status === 'enabled';
+    const totpSecret = twoFactorEnabled ? String(twoFactor.secret || '').toUpperCase().replace(/[\s=]/g, '') : '';
+
+    if (clientId && !UUID_PATTERN.test(clientId)) {
+      invalid.push({ line: lineNo, reason: `账号 ${email} 的 clientId 不是 UUID`, raw: maskRaw(clientId) });
+      return;
+    }
+    if (refreshToken && refreshToken.length < 100) {
+      invalid.push({ line: lineNo, reason: `账号 ${email} 的 refresh_token 长度不足`, raw: maskRaw(refreshToken) });
+      return;
+    }
+    if (totpSecret && !/^[A-Z2-7]{16,128}$/.test(totpSecret)) {
+      invalid.push({ line: lineNo, reason: `账号 ${email} 的两步验证密钥不是合法 Base32` });
+      return;
+    }
+    const hasAnyCredential = password || clientId || refreshToken || totpSecret || chatgptPassword;
+    if (!hasAnyCredential) {
+      invalid.push({ line: lineNo, reason: `账号 ${email} 没有任何凭据字段（credentials 里的 OAuth tokens 不导入）` });
+      return;
+    }
+    if (seenInBatch.has(email)) {
+      invalid.push({ line: lineNo, reason: `与第 ${seenInBatch.get(email)} 个账号重复` });
+      return;
+    }
+    seenInBatch.set(email, lineNo);
+    entries.push({
+      email,
+      tokens: null,
+      password,
+      clientId,
+      refreshToken,
+      // 两步验证密钥同时落在本地 TOTP 密钥与在线取件码（模板 URL 拼接取码）
+      pickupCode: totpSecret || '',
+      totpSecret,
+      chatgptPassword,
+      phone: '',
+      mailApiUrl: '',
+      note: '',
+      banned: false,
+      bannedReason: '',
+      initialBalance: null,
+      hasBalance: false,
+    });
+  });
+
+  return { ok: true, error: null, entries, invalid };
+}
+
+/**
  * ChatGPT 会话导出文件解析：密码在 meta.label 的第 3 段（label 形如 "email----xxxx----密码"）。
  * 只有邮箱或不足 3 段的条目视为无密码账号，跳过；也兼容直接粘贴 label 行。
  * 返回 { ok, passwords: Map<email, password>, error }。
