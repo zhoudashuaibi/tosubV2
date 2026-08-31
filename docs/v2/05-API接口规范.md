@@ -109,7 +109,7 @@
 
 ### GET /api/v1/accounts
 
-`?pool=reserve|main|discard&q=&status=&banned=&page=&page_size=&sort=`（pool 必填）
+`?pool=reserve|main|discard&q=&status=&banned=&has_balance=&available=&page=&page_size=&sort=`（pool 必填；`available=true` 仅备用池 = 未封禁且非加入中）
 
 ```jsonc
 // pool=reserve
@@ -120,7 +120,7 @@
     "imported_at": "...", "last_checked_at": "..."
   }],
   "total": 25,
-  "stats": { "mail_pending": 3, "mail_failed": 1, "joining": 2, "banned": 0 } }
+  "stats": { "mail_pending": 3, "mail_failed": 1, "joining": 2, "banned": 0, "available": 22, "with_balance": 10, "no_balance": 15, "total_balance": 50.0 } }
 
 // pool=main
 { "items": [{

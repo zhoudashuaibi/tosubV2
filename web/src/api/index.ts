@@ -66,6 +66,7 @@ export interface AccountFilter {
   status?: string;
   banned?: string;
   has_balance?: string;
+  available?: string;
   reason?: string;
   uploaded?: string;
   remote_status?: string;

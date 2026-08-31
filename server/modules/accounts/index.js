@@ -170,6 +170,11 @@ export function createAccountsModule({ engine, logger }) {
       if (request.query.banned === 'true' || request.query.banned === '1') filters.push('banned = 1');
       if (request.query.banned === 'false' || request.query.banned === '0') filters.push('banned = 0');
       if (request.query.has_balance === 'true') filters.push('has_balance = 1');
+      if (request.query.has_balance === 'false' || request.query.has_balance === '0') filters.push('has_balance = 0');
+      // 备用池快捷筛选「可用」：未封禁且不在加入流程，与 poolStats / dashboard 口径一致
+      if (pool === 'reserve' && request.query.available === 'true') {
+        filters.push("banned = 0 AND status != 'joining'");
+      }
       if (pool === 'discard' && request.query.reason) {
         const reason = String(request.query.reason);
         // 历史 NULL 归入 manual，与 poolStats 统计口径一致
@@ -273,16 +278,22 @@ export function createAccountsModule({ engine, logger }) {
         const stats = {};
         for (const row of rows) stats[row.status] = row.n;
         stats.banned = rows.reduce((sum, row) => sum + (row.banned || 0), 0);
+        // 可用 = 未封禁且不在加入流程（与 dashboard reserve_available 口径一致）
+        stats.available = db
+          .prepare(`SELECT COUNT(*) AS n FROM accounts WHERE pool='reserve' AND banned=0 AND status != 'joining'`)
+          .get().n;
         // 余额统计：已知初始余额（has_balance=1）求和 + 计数，未知余额不计入
         const aggregate = db
           .prepare(
             `SELECT COALESCE(SUM(initial_balance),0) AS total_balance,
-                    SUM(CASE WHEN has_balance=1 THEN 1 ELSE 0 END) AS with_balance
+                    SUM(CASE WHEN has_balance=1 THEN 1 ELSE 0 END) AS with_balance,
+                    SUM(CASE WHEN has_balance=0 THEN 1 ELSE 0 END) AS no_balance
              FROM accounts WHERE pool='reserve'`,
           )
           .get();
         stats.total_balance = Number(aggregate.total_balance || 0);
         stats.with_balance = Number(aggregate.with_balance || 0);
+        stats.no_balance = Number(aggregate.no_balance || 0);
         return stats;
       }
       if (pool === 'main') {

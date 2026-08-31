@@ -29,6 +29,8 @@ export function ReservePoolPage() {
   const queryClient = useQueryClient();
   const [q, setQ] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  // 顶部徽章快捷筛选：available = 未封禁且非加入中，banned = 已封禁，no_balance = has_balance=0
+  const [quickFilter, setQuickFilter] = useState<'' | 'available' | 'banned' | 'no_balance'>('');
   const [sort, setSort] = useState<SortState | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [importOpen, setImportOpen] = useState(false);
@@ -40,11 +42,14 @@ export function ReservePoolPage() {
   const [joinOrder, setJoinOrder] = useOrderPreference('pools.reserveJoinOrder');
 
   const { data, isLoading } = useQuery({
-    queryKey: ['accounts', 'reserve', { q, statusFilter, sort }],
+    queryKey: ['accounts', 'reserve', { q, statusFilter, quickFilter, sort }],
     queryFn: () =>
       accountsApi.list<ReserveAccount>('reserve', {
         q: q || undefined,
         status: statusFilter || undefined,
+        available: quickFilter === 'available' ? 'true' : undefined,
+        banned: quickFilter === 'banned' ? 'true' : undefined,
+        has_balance: quickFilter === 'no_balance' ? 'false' : undefined,
         sort: sort ? `${sort.key}:${sort.dir}` : undefined,
         page_size: 200,
       }),
@@ -133,8 +138,35 @@ export function ReservePoolPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="muted">总数 {data?.total ?? 0}</Badge>
-        <Badge variant="success">可用 {stats.banned !== undefined ? (data?.total ?? 0) - (stats.banned ?? 0) - (stats.joining ?? 0) : '—'}</Badge>
-        <Badge variant="danger">已封禁 {stats.banned ?? 0}</Badge>
+        {(
+          [
+            { value: 'available', label: '可用', variant: 'success' },
+            { value: 'banned', label: '已封禁', variant: 'danger' },
+            { value: 'no_balance', label: '无余额', variant: 'warning' },
+          ] as const
+        ).map((chip) => (
+          <button
+            key={chip.value}
+            type="button"
+            aria-pressed={quickFilter === chip.value}
+            className="cursor-pointer rounded-full focus-visible:outline-none"
+            onClick={() => {
+              setQuickFilter((prev) => (prev === chip.value ? '' : chip.value));
+              setStatusFilter('');
+            }}
+          >
+            <Badge
+              variant={chip.variant}
+              className={
+                quickFilter === chip.value
+                  ? 'ring-2 ring-primary ring-offset-2 ring-offset-background'
+                  : 'opacity-80 hover:opacity-100'
+              }
+            >
+              {chip.label} {stats[chip.value] ?? 0}
+            </Badge>
+          </button>
+        ))}
         <Badge variant="info">加入中 {stats.joining ?? 0}</Badge>
         <Badge variant="muted">
           总余额 ${(stats.total_balance ?? 0).toFixed(2)}
@@ -152,7 +184,10 @@ export function ReservePoolPage() {
         </div>
         <FilterSelect
           value={statusFilter}
-          onValueChange={setStatusFilter}
+          onValueChange={(next) => {
+            setStatusFilter(next);
+            setQuickFilter('');
+          }}
           label="全部状态"
           className="w-[132px]"
           options={[
@@ -199,13 +234,21 @@ export function ReservePoolPage() {
             ))}
           </div>
         ) : items.length === 0 ? (
-          <EmptyState
-            icon={Inbox}
-            title="备用号池为空"
-            description="导入 sub2api 账号导出 JSON（notes 含邮箱四段信息、ChatGPT 密码、两步验证），系统将自动补全凭据并初始化余额与封禁状态"
-            actionLabel="导入第一批账号"
-            onAction={() => setImportOpen(true)}
-          />
+          q || statusFilter || quickFilter ? (
+            <EmptyState
+              icon={Inbox}
+              title="没有符合条件的账号"
+              description="换个条件试试，或点击当前高亮的徽章取消筛选"
+            />
+          ) : (
+            <EmptyState
+              icon={Inbox}
+              title="备用号池为空"
+              description="导入 sub2api 账号导出 JSON（notes 含邮箱四段信息、ChatGPT 密码、两步验证），系统将自动补全凭据并初始化余额与封禁状态"
+              actionLabel="导入第一批账号"
+              onAction={() => setImportOpen(true)}
+            />
+          )
         ) : (
           <Table>
             <TableHeader>
