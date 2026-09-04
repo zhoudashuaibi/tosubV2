@@ -75,7 +75,9 @@ beforeEach(() => {
 test('balanceTierPriority：四档边界与未知余额默认档', () => {
   assert.equal(balanceTierPriority(0), 40);
   assert.equal(balanceTierPriority(9.4), 40);
-  assert.equal(balanceTierPriority(9.6), 20); // 四舍五入到 10，与 ---N 名称后缀同口径
+  assert.equal(balanceTierPriority(9.6), 40); // 四舍五入到 10，与 ---N 名称后缀同口径
+  assert.equal(balanceTierPriority(10), 40);
+  assert.equal(balanceTierPriority(10.6), 20);
   assert.equal(balanceTierPriority(15), 20);
   assert.equal(balanceTierPriority(19.6), 30);
   assert.equal(balanceTierPriority(25), 30);

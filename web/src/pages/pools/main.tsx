@@ -561,7 +561,7 @@ function UploadConfigDialog({
             <div className="space-y-1.5">
               <Label>优先级（留空按余额分档）</Label>
               <Input value={priority} onChange={(e) => setPriority(e.target.value)} placeholder="余额分档" />
-              <p className="text-xs text-muted-foreground">留空时：&lt;10 刀 → 40，10-20 刀 → 20，20-40 刀 → 30，≥40 刀 → 10</p>
+              <p className="text-xs text-muted-foreground">留空时：≤10 刀 → 40，11-19 刀 → 20，20-39 刀 → 30，≥40 刀 → 10</p>
             </div>
           </div>
           <div className="space-y-1.5">
