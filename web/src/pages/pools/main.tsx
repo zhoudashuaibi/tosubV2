@@ -559,8 +559,9 @@ function UploadConfigDialog({
               <Input value={loadFactor} onChange={(e) => setLoadFactor(e.target.value)} placeholder="1" />
             </div>
             <div className="space-y-1.5">
-              <Label>优先级</Label>
-              <Input value={priority} onChange={(e) => setPriority(e.target.value)} placeholder="1" />
+              <Label>优先级（留空按余额分档）</Label>
+              <Input value={priority} onChange={(e) => setPriority(e.target.value)} placeholder="余额分档" />
+              <p className="text-xs text-muted-foreground">留空时：&lt;10 刀 → 40，10-20 刀 → 20，≥20 刀 → 10</p>
             </div>
           </div>
           <div className="space-y-1.5">

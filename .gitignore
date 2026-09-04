@@ -11,3 +11,4 @@ gui-test-screenshots
 .zcode
 .agents
 .playwright-mcp
+example.json

@@ -98,7 +98,7 @@ export function createUploader({ db, crypto, client, getConfig, settingsGet, dat
 
     // 新增组：余额未查过则先实时查一次，追加 ---N 后缀
     for (const item of toCreate) {
-      await appendBalanceSuffix(item, db, crypto);
+      await appendBalanceSuffix(item, options, db, crypto);
     }
 
     let created = 0;
@@ -201,6 +201,9 @@ export function createUploader({ db, crypto, client, getConfig, settingsGet, dat
       }
     }
 
+    // 未显式配置优先级时按余额分档（<10→40 / 10-20→20 / ≥20→10），余额未知按 10 刀档
+    const priority = options.priority ?? balanceTierPriority(row?.balance);
+
     const payload = {
       ...account,
       name: account.name || `oauth---${credentials.email || row.email}`,
@@ -212,13 +215,13 @@ export function createUploader({ db, crypto, client, getConfig, settingsGet, dat
       ...(proxyIdForAccount ? { proxy_id: proxyIdForAccount } : {}),
       ...(options.concurrency !== null && options.concurrency !== undefined ? { concurrency: options.concurrency } : {}),
       ...(options.load_factor !== null && options.load_factor !== undefined ? { load_factor: options.load_factor } : {}),
-      ...(options.priority !== null && options.priority !== undefined ? { priority: options.priority } : {}),
+      ...(priority !== null && priority !== undefined ? { priority } : {}),
     };
     delete payload.proxy_key;
     return payload;
   }
 
-  async function appendBalanceSuffix(item, db, crypto) {
+  async function appendBalanceSuffix(item, options, db, crypto) {
     const payload = item.payload;
     if (/---\d+$/.test(String(payload.name || ''))) return;
     const row = db.prepare('SELECT balance, balance_checked_at, tokens_enc FROM accounts WHERE id = ?').get(item.id);
@@ -256,7 +259,11 @@ export function createUploader({ db, crypto, client, getConfig, settingsGet, dat
       }
     }
     const usd = Math.round(Number(balance));
-    if (Number.isFinite(usd)) payload.name = `${payload.name}---${usd}`;
+    if (Number.isFinite(usd)) {
+      payload.name = `${payload.name}---${usd}`;
+      // 实时补查到余额后同步校正分档优先级（buildPayload 构建时余额还是空）
+      if (options.priority == null) payload.priority = balanceTierPriority(usd);
+    }
   }
 
   function recordEvent(accountId, type, detail) {
@@ -303,6 +310,20 @@ export function buildExportFromTokens(row, tokens) {
       },
     ],
   };
+}
+
+/**
+ * 余额分档默认优先级（仅在未显式配置 priority 时生效）：
+ * <10 刀 → 40（优先消耗小额号），10-20 刀 → 20，≥20 刀 → 10（大额号留作兜底）。
+ * 档位取四舍五入后的整数余额，与名称 ---N 后缀同口径；未查过余额按默认 10 刀档计。
+ */
+export function balanceTierPriority(balance) {
+  if (balance === null || balance === undefined || balance === '') return 20;
+  const usd = Math.round(Number(balance));
+  if (!Number.isFinite(usd)) return 20;
+  if (usd < 10) return 40;
+  if (usd < 20) return 20;
+  return 10;
 }
 
 export function mergeUploadOptions(defaults = {}, override = {}) {
