@@ -72,13 +72,16 @@ beforeEach(() => {
   ctx = setup();
 });
 
-test('balanceTierPriority：三档边界与未知余额默认档', () => {
+test('balanceTierPriority：四档边界与未知余额默认档', () => {
   assert.equal(balanceTierPriority(0), 40);
   assert.equal(balanceTierPriority(9.4), 40);
   assert.equal(balanceTierPriority(9.6), 20); // 四舍五入到 10，与 ---N 名称后缀同口径
   assert.equal(balanceTierPriority(15), 20);
-  assert.equal(balanceTierPriority(19.6), 10);
-  assert.equal(balanceTierPriority(25), 10);
+  assert.equal(balanceTierPriority(19.6), 30);
+  assert.equal(balanceTierPriority(25), 30);
+  assert.equal(balanceTierPriority(39.4), 30);
+  assert.equal(balanceTierPriority(39.6), 10);
+  assert.equal(balanceTierPriority(40), 10);
   assert.equal(balanceTierPriority(null), 20); // 未查过按默认 10 刀档
   assert.equal(balanceTierPriority(undefined), 20);
 });
@@ -87,12 +90,13 @@ test('上传默认按余额分档设置优先级，并追加余额后缀', async
   const cases = [
     { email: 'small@test.local', balance: 5.4, priority: 40, suffix: '---5' },
     { email: 'mid@test.local', balance: 15, priority: 20, suffix: '---15' },
-    { email: 'big@test.local', balance: 25, priority: 10, suffix: '---25' },
+    { email: 'mid-high@test.local', balance: 25, priority: 30, suffix: '---25' },
+    { email: 'big@test.local', balance: 40, priority: 10, suffix: '---40' },
     { email: 'unknown@test.local', balance: null, priority: 20, suffix: null },
   ];
   const ids = cases.map((c) => insertAccount(ctx.db, ctx.crypto, c));
   const result = await ctx.uploader.uploadAccounts(ids, {});
-  assert.equal(result.created, 4);
+  assert.equal(result.created, 5);
   assert.equal(result.failed.length, 0);
   const byEmail = priorityByEmail();
   for (const c of cases) {

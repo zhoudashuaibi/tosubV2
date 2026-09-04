@@ -201,7 +201,7 @@ export function createUploader({ db, crypto, client, getConfig, settingsGet, dat
       }
     }
 
-    // 未显式配置优先级时按余额分档（<10→40 / 10-20→20 / ≥20→10），余额未知按 10 刀档
+    // 未显式配置优先级时按余额分档（<10→40 / 10-20→20 / 20-40→30 / ≥40→10），余额未知按 10 刀档
     const priority = options.priority ?? balanceTierPriority(row?.balance);
 
     const payload = {
@@ -314,7 +314,7 @@ export function buildExportFromTokens(row, tokens) {
 
 /**
  * 余额分档默认优先级（仅在未显式配置 priority 时生效）：
- * <10 刀 → 40（优先消耗小额号），10-20 刀 → 20，≥20 刀 → 10（大额号留作兜底）。
+ * <10 刀 → 40（优先消耗小额号），10-20 刀 → 20，20-40 刀 → 30，≥40 刀 → 10（大额号留作兜底）。
  * 档位取四舍五入后的整数余额，与名称 ---N 后缀同口径；未查过余额按默认 10 刀档计。
  */
 export function balanceTierPriority(balance) {
@@ -323,6 +323,7 @@ export function balanceTierPriority(balance) {
   if (!Number.isFinite(usd)) return 20;
   if (usd < 10) return 40;
   if (usd < 20) return 20;
+  if (usd < 40) return 30;
   return 10;
 }
 
