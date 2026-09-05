@@ -5,7 +5,7 @@ import { Archive, CloudDownload, Coins, Download, KeyRound, Loader2, Plus, Refre
 import { toast } from 'sonner';
 import { accountsApi, sub2apiApi } from '@/api';
 import { download, errorMessage } from '@/api/client';
-import type { MainAccount, Sub2ApiConfigView, UploadOptions, UploadOrder } from '@/api/types';
+import type { MainAccount, MainBalanceEstimate, Sub2ApiConfigView, UploadOptions, UploadOrder } from '@/api/types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -45,6 +45,7 @@ export function MainPoolPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [discardOpen, setDiscardOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [estimate, setEstimate] = useState<MainBalanceEstimate | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ['accounts', 'main', { q, statusFilter, remoteFilter, uploadedOnly, sort }],
@@ -83,6 +84,12 @@ export function MainPoolPage() {
       toast.success(`已发起 ${result.started} 个余额查询任务`);
       invalidate();
     },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const estimateMutation = useMutation({
+    mutationFn: () => accountsApi.mainBalanceEstimate(),
+    onSuccess: (result) => setEstimate(result),
     onError: (error) => toast.error(errorMessage(error)),
   });
 
@@ -213,6 +220,15 @@ export function MainPoolPage() {
             { value: 'not_uploaded', label: '未上传' },
           ]}
         />
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={estimateMutation.isPending}
+          onClick={() => estimateMutation.mutate()}
+        >
+          {estimateMutation.isPending ? <Loader2 className="animate-spin" /> : <Coins />}
+          预估剩余余额
+        </Button>
         <Button
           variant="outline"
           size="sm"
@@ -418,6 +434,8 @@ export function MainPoolPage() {
 
       <AddAccountDialog open={addOpen} onOpenChange={setAddOpen} />
 
+      <BalanceEstimateDialog estimate={estimate} onOpenChange={(open) => !open && setEstimate(null)} />
+
       <ConfirmDialog
         open={discardOpen}
         onOpenChange={setDiscardOpen}
@@ -437,6 +455,55 @@ export function MainPoolPage() {
         onConfirm={() => deleteMutation.mutate(selectedIds)}
       />
     </div>
+  );
+}
+
+function BalanceEstimateDialog({
+  estimate,
+  onOpenChange,
+}: {
+  estimate: MainBalanceEstimate | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const reasonLabel: Record<string, string> = {
+    not_uploaded: '未上传到 Sub2API',
+    remote_account_not_found: 'Sub2API 中未找到账号',
+    initial_balance_unknown: '初始化余额未知',
+    remote_used_amount_unknown: 'Sub2API 未提供明确已用金额',
+  };
+  const unknownItems = estimate?.items.filter((item) => item.reason) ?? [];
+  return (
+    <Dialog open={Boolean(estimate)} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>主号池预估剩余余额</DialogTitle>
+          <DialogDescription>
+            仅使用 Sub2API 管理端用量字段减去本地初始化余额，不会调用 OpenAI 余额接口或刷新账号授权。
+          </DialogDescription>
+        </DialogHeader>
+        {estimate && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-md border p-3"><div className="text-xs text-muted-foreground">预估剩余</div><div className="text-xl font-semibold">${estimate.total_estimated_remaining.toFixed(2)}</div></div>
+              <div className="rounded-md border p-3"><div className="text-xs text-muted-foreground">可计算账号</div><div className="text-xl font-semibold">{estimate.calculable_count}</div></div>
+              <div className="rounded-md border p-3"><div className="text-xs text-muted-foreground">未知账号</div><div className="text-xl font-semibold">{estimate.unknown_count}</div></div>
+            </div>
+            {unknownItems.length > 0 && (
+              <div className="max-h-64 space-y-1 overflow-auto rounded-md border p-3 text-sm">
+                {unknownItems.map((item) => (
+                  <div key={item.id} className="flex justify-between gap-3">
+                    <span className="truncate font-mono">{item.email}</span>
+                    <span className="shrink-0 text-muted-foreground">{reasonLabel[item.reason ?? ''] ?? '无法计算'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="text-xs text-muted-foreground">查询时间：{new Date(estimate.queried_at).toLocaleString()}</div>
+          </div>
+        )}
+        <DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

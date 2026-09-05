@@ -114,6 +114,34 @@ export function createSub2apiClient(getConfig) {
     });
   }
 
+  /**
+   * 从 Sub2API 管理端账号对象读取明确的累计消费字段。
+   * 不把 balance/credits 当作已用金额，也不调用账号凭据对应的 OpenAI 接口。
+   */
+  function accountUsedAmount(account) {
+    const candidates = [
+      ['used_amount', account?.used_amount],
+      ['consumed_amount', account?.consumed_amount],
+      ['total_cost', account?.total_cost],
+      ['cost', account?.cost],
+      ['usage.used_amount', account?.usage?.used_amount],
+      ['usage.consumed_amount', account?.usage?.consumed_amount],
+      ['usage.total_cost', account?.usage?.total_cost],
+      ['usage.cost', account?.usage?.cost],
+      ['usage.totalCost', account?.usage?.totalCost],
+      ['billing.used_amount', account?.billing?.used_amount],
+      ['billing.total_cost', account?.billing?.total_cost],
+      ['billing.cost', account?.billing?.cost],
+    ];
+    for (const [source, value] of candidates) {
+      const amount = Number(value);
+      if (value !== null && value !== undefined && value !== '' && Number.isFinite(amount) && amount >= 0) {
+        return { amount, source };
+      }
+    }
+    return null;
+  }
+
   /** 账号邮箱提取：credentials.email → extra.email → name 正则。 */
   function accountEmail(account) {
     const direct = [account?.credentials?.email, account?.extra?.email]
@@ -165,6 +193,7 @@ export function createSub2apiClient(getConfig) {
     clearError,
     setSchedulable,
     accountEmail,
+    accountUsedAmount,
     accountErrorMessage,
     accountRateLimit,
     testConnection,

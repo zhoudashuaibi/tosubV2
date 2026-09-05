@@ -5,6 +5,7 @@ import type {
   ImportResult,
   Job,
   MainAccount,
+  MainBalanceEstimate,
   MergedProxyReplaceResult,
   Paged,
   Pool,
@@ -94,6 +95,7 @@ export interface AccountFilter {
 export const accountsApi = {
   list: <T extends ReserveAccount | MainAccount | DiscardAccount>(pool: Pool, f: AccountFilter = {}) =>
     api<Paged<T> & { stats: Record<string, number> }>(`/accounts?pool=${pool}&${toQuery(f)}`),
+  mainBalanceEstimate: () => api<MainBalanceEstimate>('/accounts/main-balance-estimate'),
   import: (text: string, opts: { force_discard?: boolean; force_remote?: boolean } = {}) =>
     api<ImportResult>('/accounts/import', { json: { text, ...opts } }),
   create: (body: Record<string, unknown>) =>

@@ -178,6 +178,32 @@
 // 202 { "started": 2, "skipped": [{ "id": 203, "reason": "凭据不全" }] }
 ```
 
+### GET /api/v1/accounts/main-balance-estimate
+
+使用 Sub2API 管理端 `admin_key` 读取远端 OpenAI 账号对象中的明确消费字段，再与本地账号的 `initial_balance` 做差。该接口只读，不调用 OpenAI `wham/usage`，不使用 OAuth token，不创建余额任务，也不写入数据库。
+
+```jsonc
+// 200
+{
+  "scope": "main",
+  "estimate": true,
+  "source": "sub2api_admin_usage_minus_initial_balance",
+  "queried_at": "2026-09-05T00:00:00.000Z",
+  "account_count": 10,
+  "calculable_count": 8,
+  "unknown_count": 2,
+  "total_estimated_remaining": 123.45,
+  "items": [{
+    "id": 201, "email": "a@example.com", "initial_balance": 20,
+    "sub2api_account_id": 31, "used_amount": 4.2,
+    "used_amount_source": "used_amount", "estimated_remaining": 15.8,
+    "reason": null
+  }]
+}
+```
+
+`reason` 可能是 `not_uploaded`、`remote_account_not_found`、`initial_balance_unknown` 或 `remote_used_amount_unknown`。没有明确消费字段时不会使用 `balance`、账号名后缀或 OpenAI 余额接口替代。
+
 ### POST /api/v1/accounts/batch-refresh-balance
 
 ```jsonc

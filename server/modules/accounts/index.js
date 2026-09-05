@@ -12,6 +12,55 @@ import { sanitizeText } from '../../lib/sanitize.js';
 import { UPLOAD_ORDERS, uploadOrderExpr } from '../../lib/upload-order.js';
 
 const POOLS = ['reserve', 'main', 'discard'];
+
+export function buildMainBalanceEstimate(rows, remoteAccounts, { accountEmail, accountUsedAmount }) {
+  const byId = new Map(remoteAccounts.filter((account) => account?.id != null).map((account) => [String(account.id), account]));
+  const byEmail = new Map(remoteAccounts.map((account) => [accountEmail(account), account]).filter(([email]) => email));
+  const items = [];
+  let total = 0;
+  let calculable = 0;
+
+  for (const row of rows) {
+    const remote = (row.sub2api_account_id != null && byId.get(String(row.sub2api_account_id))) || byEmail.get(String(row.email || '').trim().toLowerCase());
+    const initialRaw = row.initial_balance;
+    const initial = initialRaw === null || initialRaw === undefined || initialRaw === '' ? NaN : Number(initialRaw);
+    const used = remote ? accountUsedAmount(remote) : null;
+    let reason = null;
+    if (!remote) reason = row.sub2api_account_id == null ? 'not_uploaded' : 'remote_account_not_found';
+    else if (!Number.isFinite(initial) || initial < 0) reason = 'initial_balance_unknown';
+    else if (!used) reason = 'remote_used_amount_unknown';
+
+    const item = {
+      id: row.id,
+      email: row.email,
+      initial_balance: Number.isFinite(initial) && initial >= 0 ? initial : null,
+      sub2api_account_id: remote?.id ?? row.sub2api_account_id ?? null,
+      used_amount: used?.amount ?? null,
+      used_amount_source: used?.source ?? null,
+      estimated_remaining: null,
+      reason,
+    };
+    if (!reason) {
+      item.estimated_remaining = Math.max(0, Number((initial - used.amount).toFixed(2)));
+      total += item.estimated_remaining;
+      calculable += 1;
+    }
+    items.push(item);
+  }
+
+  return {
+    scope: 'main',
+    estimate: true,
+    source: 'sub2api_admin_usage_minus_initial_balance',
+    queried_at: new Date().toISOString(),
+    account_count: rows.length,
+    calculable_count: calculable,
+    unknown_count: rows.length - calculable,
+    total_estimated_remaining: Number(total.toFixed(2)),
+    items,
+  };
+}
+
 const SORT_WHITELIST = {
   reserve: {
     created_at: 'created_at',
@@ -113,24 +162,7 @@ export function createAccountsModule({ engine, logger }) {
           }
           return;
         }
-        if (ok) {
-          // 登录成功后总是补查一次余额（首次 join 与重新授权都刷新；任务已终态，
-          // 若同账号已有排队的余额任务则跳过，避免活跃任务唯一索引冲突）
-          try {
-            const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(job.account_id);
-            if (account?.pool === 'main' && account.tokens_enc) {
-              const active = db
-                .prepare(`SELECT id FROM jobs WHERE account_id=? AND status IN ('queued','running') AND type='balance'`)
-                .get(job.account_id);
-              if (!active) {
-                engine.submitJob({ accountId: job.account_id, type: 'balance', note: '登录成功后自动查余额' });
-              }
-            }
-          } catch (error) {
-            logger.warn({ accountId: job.account_id, err: error.message }, 'auto balance job submit failed');
-          }
-          return;
-        }
+        if (ok) return;
         pools.joinFailed(job.account_id, {
           error: message || code || '登录失败',
           jobId: job.id,
@@ -144,7 +176,7 @@ export function createAccountsModule({ engine, logger }) {
     engine.hooks.onTokensSaved = (job, runtime, tokens) => {
       if (!job?.account_id) return;
       try {
-        // 转池必须最先执行：余额补查等派生任务一律延迟到 onLoginFinished（任务终态后），
+        // 转池必须最先执行：如需派生任务须延迟到 onLoginFinished（任务终态后），
         // 否则同账号活跃任务唯一索引冲突会把整个转池中断
         const result = pools.joinSucceeded(job.account_id, {
           tokensEnc: crypto.encryptJson(tokens, 'accounts.tokens_enc'),
@@ -177,6 +209,20 @@ export function createAccountsModule({ engine, logger }) {
       Promise.resolve(banMailCheck.check(job.account_id, { source: 'login_permanent_failure' })).catch(() => {});
     };
 
+    // ---------------- 主号池预估余额（Sub2API 管理端只读） ----------------
+    app.get('/api/v1/accounts/main-balance-estimate', async () => {
+      const client = app.sub2apiClient;
+      const config = app.settings.get('sub2api.config');
+      if (!client || !config?.base_url || !config?.admin_key) {
+        throw errors.validation('请先配置 sub2api 管理员密钥和后端地址');
+      }
+      const rows = db
+        .prepare(`SELECT id, email, initial_balance, sub2api_account_id FROM accounts WHERE pool='main' ORDER BY id ASC`)
+        .all();
+      const remoteAccounts = await client.listAllOpenAiAccounts();
+      return buildMainBalanceEstimate(rows, remoteAccounts, client);
+    });
+
     // ---------------- 列表 ----------------
     app.get('/api/v1/accounts', async (request) => {
       const pool = String(request.query.pool || '');
@@ -196,9 +242,9 @@ export function createAccountsModule({ engine, logger }) {
       if (request.query.banned === 'false' || request.query.banned === '0') filters.push('banned = 0');
       if (request.query.has_balance === 'true') filters.push('has_balance = 1');
       if (request.query.has_balance === 'false' || request.query.has_balance === '0') filters.push('has_balance = 0');
-      // 备用池快捷筛选「可用」：未封禁且不在加入流程，与 poolStats / dashboard 口径一致
+      // 备用池快捷筛选「可用」：未封禁、不在加入流程且有已知余额，与 poolStats / dashboard 口径一致
       if (pool === 'reserve' && request.query.available === 'true') {
-        filters.push("banned = 0 AND status != 'joining'");
+        filters.push("banned = 0 AND status != 'joining' AND has_balance = 1");
       }
       if (pool === 'discard') {
         if (request.query.reason) {

@@ -65,6 +65,29 @@ export interface ReserveAccount {
   has_password: boolean;
 }
 
+export interface MainBalanceEstimateItem {
+  id: number;
+  email: string;
+  initial_balance: number | null;
+  sub2api_account_id: number | null;
+  used_amount: number | null;
+  used_amount_source: string | null;
+  estimated_remaining: number | null;
+  reason: 'not_uploaded' | 'remote_account_not_found' | 'initial_balance_unknown' | 'remote_used_amount_unknown' | null;
+}
+
+export interface MainBalanceEstimate {
+  scope: 'main';
+  estimate: true;
+  source: string;
+  queried_at: string;
+  account_count: number;
+  calculable_count: number;
+  unknown_count: number;
+  total_estimated_remaining: number;
+  items: MainBalanceEstimateItem[];
+}
+
 export interface MainAccount {
   id: number;
   email: string;

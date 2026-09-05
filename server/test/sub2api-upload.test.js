@@ -7,6 +7,7 @@ import { openDatabase } from '../lib/db.js';
 import { createCrypto } from '../lib/crypto.js';
 import { createLogger } from '../lib/logger.js';
 import { createUploader, balanceTierPriority, mergeUploadOptions } from '../modules/sub2api/upload.js';
+import { buildMainBalanceEstimate } from '../modules/accounts/index.js';
 
 const logger = createLogger('silent');
 
@@ -119,6 +120,44 @@ test('显式指定优先级时不做余额分档', async () => {
   const byEmail = priorityByEmail();
   assert.equal(byEmail.get('a@test.local').priority, 99);
   assert.equal(byEmail.get('b@test.local').priority, 99);
+});
+
+test('主号池预估余额：按邮箱匹配并扣除管理端已用金额，负数归零', () => {
+  const result = buildMainBalanceEstimate(
+    [
+      { id: 1, email: 'a@test.local', initial_balance: 20, sub2api_account_id: null },
+      { id: 2, email: 'b@test.local', initial_balance: 5, sub2api_account_id: 22 },
+      { id: 3, email: 'c@test.local', initial_balance: null, sub2api_account_id: 33 },
+    ],
+    [
+      { id: 11, credentials: { email: 'a@test.local' }, used_amount: 6.4 },
+      { id: 22, credentials: { email: 'b@test.local' }, usage: { total_cost: 8 } },
+      { id: 33, credentials: { email: 'c@test.local' }, used_amount: 1 },
+    ],
+    {
+      accountEmail: (account) => account?.credentials?.email || null,
+      accountUsedAmount: (account) => {
+        const value = account.used_amount ?? account.usage?.total_cost;
+        return Number.isFinite(Number(value)) ? { amount: Number(value), source: 'test' } : null;
+      },
+    },
+  );
+  assert.equal(result.total_estimated_remaining, 13.6);
+  assert.equal(result.calculable_count, 2);
+  assert.equal(result.unknown_count, 1);
+  assert.equal(result.items[1].estimated_remaining, 0);
+  assert.equal(result.items[2].reason, 'initial_balance_unknown');
+});
+
+test('主号池预估余额：缺少远端用量时保持未知，不写入余额', () => {
+  const result = buildMainBalanceEstimate(
+    [{ id: 1, email: 'a@test.local', initial_balance: 20, sub2api_account_id: 7 }],
+    [{ id: 7, credentials: { email: 'a@test.local' } }],
+    { accountEmail: () => 'a@test.local', accountUsedAmount: () => null },
+  );
+  assert.equal(result.total_estimated_remaining, 0);
+  assert.equal(result.unknown_count, 1);
+  assert.equal(result.items[0].reason, 'remote_used_amount_unknown');
 });
 
 test('mergeUploadOptions：未显式覆盖时 priority 保持空，交给分档逻辑', () => {
