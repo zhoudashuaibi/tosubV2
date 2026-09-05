@@ -180,7 +180,7 @@
 
 ### GET /api/v1/accounts/main-balance-estimate
 
-使用 Sub2API 管理端 `admin_key` 读取远端 OpenAI 账号对象中的明确消费字段，再与本地账号的 `initial_balance` 做差。该接口只读，不调用 OpenAI `wham/usage`，不使用 OAuth token，不创建余额任务，也不写入数据库。
+使用 Sub2API 管理端 `admin_key` 读取远端账号统计接口 `/api/v1/admin/accounts/{id}/stats?days=90` 返回的 `summary.total_cost`，再与本地账号的 `initial_balance` 做差。该接口只读，不调用 OpenAI `wham/usage`，不使用 OAuth token，不创建余额任务，也不写入数据库。
 
 ```jsonc
 // 200
@@ -202,7 +202,7 @@
 }
 ```
 
-`reason` 可能是 `not_uploaded`、`remote_account_not_found`、`initial_balance_unknown` 或 `remote_used_amount_unknown`。没有明确消费字段时不会使用 `balance`、账号名后缀或 OpenAI 余额接口替代。
+`reason` 可能是 `not_uploaded`、`remote_account_not_found`、`initial_balance_unknown` 或 `remote_used_amount_unknown`。如果统计接口不可用或返回中没有 `summary.total_cost`，不会使用账号列表中的 `balance`、账号名后缀或 OpenAI 余额接口替代。
 
 ### POST /api/v1/accounts/batch-refresh-balance
 

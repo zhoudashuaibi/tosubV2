@@ -478,7 +478,7 @@ function BalanceEstimateDialog({
         <DialogHeader>
           <DialogTitle>主号池预估剩余余额</DialogTitle>
           <DialogDescription>
-            仅使用 Sub2API 管理端用量字段减去本地初始化余额，不会调用 OpenAI 余额接口或刷新账号授权。
+            使用 Sub2API 管理端账号统计中的累计费用减去本地初始化余额（统计最近 90 天），不会调用 OpenAI 余额接口或刷新账号授权。
           </DialogDescription>
         </DialogHeader>
         {estimate && (

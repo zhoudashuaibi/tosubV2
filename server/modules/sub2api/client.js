@@ -91,6 +91,11 @@ export function createSub2apiClient(getConfig) {
     return request(`/api/v1/admin/accounts/${id}`);
   }
 
+  function getAccountStats(id, days = 90) {
+    const safeDays = Math.min(90, Math.max(1, Math.floor(Number(days) || 90)));
+    return request(`/api/v1/admin/accounts/${encodeURIComponent(id)}/stats?days=${safeDays}`);
+  }
+
   function createAccountsBatch(accounts, idempotencyKey) {
     return request('/api/v1/admin/accounts/batch', {
       method: 'POST',
@@ -132,6 +137,9 @@ export function createSub2apiClient(getConfig) {
       ['billing.used_amount', account?.billing?.used_amount],
       ['billing.total_cost', account?.billing?.total_cost],
       ['billing.cost', account?.billing?.cost],
+      ['usage_stats.summary.total_cost', account?.usage_stats?.summary?.total_cost],
+      ['stats.summary.total_cost', account?.stats?.summary?.total_cost],
+      ['account_usage_stats.summary.total_cost', account?.account_usage_stats?.summary?.total_cost],
     ];
     for (const [source, value] of candidates) {
       const amount = Number(value);
@@ -188,6 +196,7 @@ export function createSub2apiClient(getConfig) {
     bulkUpdateAccounts,
     listAllOpenAiAccounts,
     getAccount,
+    getAccountStats,
     createAccountsBatch,
     updateAccount,
     clearError,

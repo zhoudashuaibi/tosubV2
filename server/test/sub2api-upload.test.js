@@ -8,6 +8,7 @@ import { createCrypto } from '../lib/crypto.js';
 import { createLogger } from '../lib/logger.js';
 import { createUploader, balanceTierPriority, mergeUploadOptions } from '../modules/sub2api/upload.js';
 import { buildMainBalanceEstimate } from '../modules/accounts/index.js';
+import { createSub2apiClient } from '../modules/sub2api/client.js';
 
 const logger = createLogger('silent');
 
@@ -120,6 +121,24 @@ test('显式指定优先级时不做余额分档', async () => {
   const byEmail = priorityByEmail();
   assert.equal(byEmail.get('a@test.local').priority, 99);
   assert.equal(byEmail.get('b@test.local').priority, 99);
+});
+
+test('Sub2API 管理端账号统计：使用 /stats?days=90 并携带管理员密钥', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), options });
+    return new Response(JSON.stringify({ data: { summary: { total_cost: 3.25 } } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const client = createSub2apiClient(() => ({ base_url: 'https://sub2api.example/', admin_key: 'admin-secret' }));
+    const result = await client.getAccountStats(42, 90);
+    assert.equal(result.data.summary.total_cost, 3.25);
+    assert.equal(calls[0].url, 'https://sub2api.example/api/v1/admin/accounts/42/stats?days=90');
+    assert.equal(calls[0].options.headers['x-api-key'], 'admin-secret');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('主号池预估余额：按邮箱匹配并扣除管理端已用金额，负数归零', () => {

@@ -220,7 +220,30 @@ export function createAccountsModule({ engine, logger }) {
         .prepare(`SELECT id, email, initial_balance, sub2api_account_id FROM accounts WHERE pool='main' ORDER BY id ASC`)
         .all();
       const remoteAccounts = await client.listAllOpenAiAccounts();
-      return buildMainBalanceEstimate(rows, remoteAccounts, client);
+      const localIds = new Set(rows.filter((row) => row.sub2api_account_id != null).map((row) => String(row.sub2api_account_id)));
+      const localEmails = new Set(rows.map((row) => String(row.email || '').trim().toLowerCase()).filter(Boolean));
+      const relevantRemoteAccounts = remoteAccounts.filter(
+        (account) => localIds.has(String(account?.id)) || localEmails.has(String(client.accountEmail(account) || '')),
+      );
+      const remoteWithStats = [];
+      const concurrency = 6;
+      for (let start = 0; start < relevantRemoteAccounts.length; start += concurrency) {
+        const batch = relevantRemoteAccounts.slice(start, start + concurrency);
+        const results = await Promise.all(
+          batch.map(async (account) => {
+            try {
+              const payload = await client.getAccountStats(account.id, 90);
+              const stats = payload?.data && typeof payload.data === 'object' ? payload.data : payload;
+              return { ...account, usage_stats: stats };
+            } catch (error) {
+              logger.warn({ accountId: account.id, err: error.message }, 'sub2api account stats query failed');
+              return account;
+            }
+          }),
+        );
+        remoteWithStats.push(...results);
+      }
+      return buildMainBalanceEstimate(rows, remoteWithStats, client);
     });
 
     // ---------------- 列表 ----------------
