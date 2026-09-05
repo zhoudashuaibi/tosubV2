@@ -13,27 +13,48 @@ import { UPLOAD_ORDERS, uploadOrderExpr } from '../../lib/upload-order.js';
 
 const POOLS = ['reserve', 'main', 'discard'];
 
+function initialBalanceFromSub2apiName(name) {
+  const match = String(name || '').match(/---(\d+)$/);
+  if (!match) return null;
+  const balance = Number(match[1]);
+  return Number.isSafeInteger(balance) && balance >= 0 ? balance : null;
+}
+
+function finiteNonNegativeAmount(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount >= 0 ? amount : null;
+}
+
 export function buildMainBalanceEstimate(rows, remoteAccounts, { accountEmail, accountUsedAmount }) {
   const byId = new Map(remoteAccounts.filter((account) => account?.id != null).map((account) => [String(account.id), account]));
-  const byEmail = new Map(remoteAccounts.map((account) => [accountEmail(account), account]).filter(([email]) => email));
+  const byEmail = new Map(
+    remoteAccounts
+      .map((account) => [String(accountEmail(account) || '').trim().toLowerCase(), account])
+      .filter(([email]) => email),
+  );
   const items = [];
   let total = 0;
   let calculable = 0;
 
   for (const row of rows) {
     const remote = (row.sub2api_account_id != null && byId.get(String(row.sub2api_account_id))) || byEmail.get(String(row.email || '').trim().toLowerCase());
-    const initialRaw = row.initial_balance;
-    const initial = initialRaw === null || initialRaw === undefined || initialRaw === '' ? NaN : Number(initialRaw);
+    const initialMissing = row.initial_balance === null || row.initial_balance === undefined || row.initial_balance === '';
+    const localInitial = initialMissing ? null : finiteNonNegativeAmount(row.initial_balance);
+    const suffixInitial = initialMissing && remote ? initialBalanceFromSub2apiName(remote.name) : null;
+    const initial = localInitial ?? suffixInitial;
+    const initialBalanceSource = localInitial !== null ? 'local' : suffixInitial !== null ? 'sub2api_name_suffix' : null;
     const used = remote ? accountUsedAmount(remote) : null;
     let reason = null;
     if (!remote) reason = row.sub2api_account_id == null ? 'not_uploaded' : 'remote_account_not_found';
-    else if (!Number.isFinite(initial) || initial < 0) reason = 'initial_balance_unknown';
+    else if (initial === null) reason = 'initial_balance_unknown';
     else if (!used) reason = 'remote_used_amount_unknown';
 
     const item = {
       id: row.id,
       email: row.email,
-      initial_balance: Number.isFinite(initial) && initial >= 0 ? initial : null,
+      initial_balance: initial,
+      initial_balance_source: initialBalanceSource,
       sub2api_account_id: remote?.id ?? row.sub2api_account_id ?? null,
       used_amount: used?.amount ?? null,
       used_amount_source: used?.source ?? null,

@@ -70,6 +70,16 @@ function priorityByEmail() {
   return map;
 }
 
+function estimateOptions() {
+  return {
+    accountEmail: (account) => account?.credentials?.email || null,
+    accountUsedAmount: (account) => {
+      const value = account.used_amount ?? account.usage?.total_cost;
+      return Number.isFinite(Number(value)) ? { amount: Number(value), source: 'test' } : null;
+    },
+  };
+}
+
 beforeEach(() => {
   ctx = setup();
 });
@@ -141,7 +151,7 @@ test('Sub2API 管理端账号统计：使用 /stats?days=90 并携带管理员�
   }
 });
 
-test('主号池预估余额：按邮箱匹配并扣除管理端已用金额，负数归零', () => {
+test('主号池预估余额：名称后缀回退、邮箱匹配和负数归零', () => {
   const result = buildMainBalanceEstimate(
     [
       { id: 1, email: 'a@test.local', initial_balance: 20, sub2api_account_id: null },
@@ -151,21 +161,40 @@ test('主号池预估余额：按邮箱匹配并扣除管理端已用金额，�
     [
       { id: 11, credentials: { email: 'a@test.local' }, used_amount: 6.4 },
       { id: 22, credentials: { email: 'b@test.local' }, usage: { total_cost: 8 } },
-      { id: 33, credentials: { email: 'c@test.local' }, used_amount: 1 },
+      { id: 33, name: 'oauth---c@test.local---20', credentials: { email: 'c@test.local' }, used_amount: 1 },
     ],
-    {
-      accountEmail: (account) => account?.credentials?.email || null,
-      accountUsedAmount: (account) => {
-        const value = account.used_amount ?? account.usage?.total_cost;
-        return Number.isFinite(Number(value)) ? { amount: Number(value), source: 'test' } : null;
-      },
-    },
+    estimateOptions(),
   );
-  assert.equal(result.total_estimated_remaining, 13.6);
-  assert.equal(result.calculable_count, 2);
-  assert.equal(result.unknown_count, 1);
+  assert.equal(result.total_estimated_remaining, 32.6);
+  assert.equal(result.calculable_count, 3);
+  assert.equal(result.unknown_count, 0);
   assert.equal(result.items[1].estimated_remaining, 0);
-  assert.equal(result.items[2].reason, 'initial_balance_unknown');
+  assert.equal(result.items[2].initial_balance, 20);
+  assert.equal(result.items[2].initial_balance_source, 'sub2api_name_suffix');
+  assert.equal(result.items[2].estimated_remaining, 19);
+});
+
+test('主号池预估余额：本地初始化余额优先于远端名称后缀', () => {
+  const result = buildMainBalanceEstimate(
+    [{ id: 1, email: 'a@test.local', initial_balance: 5, sub2api_account_id: 7 }],
+    [{ id: 7, name: 'oauth---a@test.local---20', credentials: { email: 'a@test.local' }, used_amount: 1 }],
+    estimateOptions(),
+  );
+  assert.equal(result.items[0].initial_balance, 5);
+  assert.equal(result.items[0].initial_balance_source, 'local');
+  assert.equal(result.items[0].estimated_remaining, 4);
+});
+
+test('主号池预估余额：非末尾整数后缀不作为初始化余额', () => {
+  const result = buildMainBalanceEstimate(
+    [{ id: 1, email: 'a@test.local', initial_balance: null, sub2api_account_id: 7 }],
+    [{ id: 7, name: 'oauth---a@test.local---20-extra', credentials: { email: 'a@test.local' }, used_amount: 1 }],
+    estimateOptions(),
+  );
+  assert.equal(result.unknown_count, 1);
+  assert.equal(result.items[0].initial_balance, null);
+  assert.equal(result.items[0].initial_balance_source, null);
+  assert.equal(result.items[0].reason, 'initial_balance_unknown');
 });
 
 test('主号池预估余额：缺少远端用量时保持未知，不写入余额', () => {

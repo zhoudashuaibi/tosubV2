@@ -69,6 +69,7 @@ export interface MainBalanceEstimateItem {
   id: number;
   email: string;
   initial_balance: number | null;
+  initial_balance_source: 'local' | 'sub2api_name_suffix' | null;
   sub2api_account_id: number | null;
   used_amount: number | null;
   used_amount_source: string | null;

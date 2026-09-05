@@ -180,7 +180,7 @@
 
 ### GET /api/v1/accounts/main-balance-estimate
 
-使用 Sub2API 管理端 `admin_key` 读取远端账号统计接口 `/api/v1/admin/accounts/{id}/stats?days=90` 返回的 `summary.total_cost`，再与本地账号的 `initial_balance` 做差。该接口只读，不调用 OpenAI `wham/usage`，不使用 OAuth token，不创建余额任务，也不写入数据库。
+使用 Sub2API 管理端 `admin_key` 读取远端账号统计接口 `/api/v1/admin/accounts/{id}/stats?days=90` 返回的 `summary.total_cost`，再与初始化余额做差。初始化余额优先使用本地 `accounts.initial_balance`；本地值缺失时，才使用远端账号名末尾严格匹配的 `---N` 非负整数美元后缀（上传时写入的邮件余额整数）。该接口只读，不调用 OpenAI `wham/usage`，不使用 OAuth token，不创建余额任务，也不写入数据库。
 
 ```jsonc
 // 200
@@ -195,6 +195,7 @@
   "total_estimated_remaining": 123.45,
   "items": [{
     "id": 201, "email": "a@example.com", "initial_balance": 20,
+    "initial_balance_source": "local",
     "sub2api_account_id": 31, "used_amount": 4.2,
     "used_amount_source": "used_amount", "estimated_remaining": 15.8,
     "reason": null
@@ -202,7 +203,7 @@
 }
 ```
 
-`reason` 可能是 `not_uploaded`、`remote_account_not_found`、`initial_balance_unknown` 或 `remote_used_amount_unknown`。如果统计接口不可用或返回中没有 `summary.total_cost`，不会使用账号列表中的 `balance`、账号名后缀或 OpenAI 余额接口替代。
+`initial_balance_source` 为 `local`、`sub2api_name_suffix` 或 `null`。`reason` 可能是 `not_uploaded`、`remote_account_not_found`、`initial_balance_unknown` 或 `remote_used_amount_unknown`。账号名后缀只用于补充缺失的初始化余额；如果统计接口不可用或返回中没有 `summary.total_cost`，仍不会使用账号列表中的 `balance` 或 OpenAI 余额接口替代。
 
 ### POST /api/v1/accounts/batch-refresh-balance
 

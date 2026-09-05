@@ -498,6 +498,7 @@ function BalanceEstimateDialog({
                 ))}
               </div>
             )}
+            <div className="text-xs text-muted-foreground">本地初始化余额缺失时，使用 Sub2API 账号名末尾的 `---N` 整数美元后缀；该后缀来自上传时的邮件余额。</div>
             <div className="text-xs text-muted-foreground">查询时间：{new Date(estimate.queried_at).toLocaleString()}</div>
           </div>
         )}
