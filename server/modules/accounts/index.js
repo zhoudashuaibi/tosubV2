@@ -36,6 +36,31 @@ const SORT_WHITELIST = {
   discard: { created_at: 'created_at', email: 'email', discarded_at: 'discarded_at' },
 };
 
+export function parseDiscardedAtRange(query = {}) {
+  const parse = (value, name) => {
+    if (value === undefined || value === null || value === '') return null;
+    const timestamp = Date.parse(String(value));
+    if (!Number.isFinite(timestamp)) throw errors.validation(`${name} 必须是有效的 ISO 时间`);
+    return new Date(timestamp).toISOString();
+  };
+  const from = parse(query.discarded_from, 'discarded_from');
+  const to = parse(query.discarded_to, 'discarded_to');
+  if (from && to && from >= to) throw errors.validation('discarded_from 必须早于 discarded_to');
+  return { from, to };
+}
+
+export function appendDiscardedAtFilters(filters, params, query = {}) {
+  const { from, to } = parseDiscardedAtRange(query);
+  if (from) {
+    filters.push('discarded_at >= ?');
+    params.push(from);
+  }
+  if (to) {
+    filters.push('discarded_at < ?');
+    params.push(to);
+  }
+}
+
 export function createAccountsModule({ engine, logger }) {
   return async function accountsModule(app) {
     const db = app.db;
@@ -175,14 +200,17 @@ export function createAccountsModule({ engine, logger }) {
       if (pool === 'reserve' && request.query.available === 'true') {
         filters.push("banned = 0 AND status != 'joining'");
       }
-      if (pool === 'discard' && request.query.reason) {
-        const reason = String(request.query.reason);
-        // 历史 NULL 归入 manual，与 poolStats 统计口径一致
-        if (reason === 'manual') filters.push("(discard_reason = 'manual' OR discard_reason IS NULL)");
-        else {
-          filters.push('discard_reason = ?');
-          params.push(reason);
+      if (pool === 'discard') {
+        if (request.query.reason) {
+          const reason = String(request.query.reason);
+          // 历史 NULL 归入 manual，与 poolStats 统计口径一致
+          if (reason === 'manual') filters.push("(discard_reason = 'manual' OR discard_reason IS NULL)");
+          else {
+            filters.push('discard_reason = ?');
+            params.push(reason);
+          }
         }
+        appendDiscardedAtFilters(filters, params, request.query);
       }
       if (pool === 'main' && (request.query.uploaded === 'true' || request.query.uploaded === 'false')) {
         filters.push(request.query.uploaded === 'true' ? 'sub2api_account_id IS NOT NULL' : 'sub2api_account_id IS NULL');

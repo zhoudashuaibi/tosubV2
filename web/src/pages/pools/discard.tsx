@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, RotateCcw, Trash2 } from 'lucide-react';
+import { Archive, RotateCcw, Trash2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { accountsApi } from '@/api';
 import { errorMessage } from '@/api/client';
@@ -36,20 +36,39 @@ const REASON_CHIPS: Array<{ value: keyof typeof REASON_LABELS; variant: 'danger'
   { value: 'manual', variant: 'muted' },
 ];
 
+function localDateValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function dateRangeForDay(value: string) {
+  if (!value) return { discarded_from: undefined, discarded_to: undefined };
+  const start = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(start.getTime())) return { discarded_from: undefined, discarded_to: undefined };
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { discarded_from: start.toISOString(), discarded_to: end.toISOString() };
+}
+
 export function DiscardPoolPage() {
   const queryClient = useQueryClient();
   const [q, setQ] = useState('');
   const [reason, setReason] = useState('');
+  const [discardedDate, setDiscardedDate] = useState(() => localDateValue());
   const [sort, setSort] = useState<SortState | null>({ key: 'discarded_at', dir: 'desc' });
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const discardedRange = dateRangeForDay(discardedDate);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['accounts', 'discard', { q, reason, sort }],
+    queryKey: ['accounts', 'discard', { q, reason, discardedDate, sort }],
     queryFn: () =>
       accountsApi.list<DiscardAccount>('discard', {
         q: q || undefined,
         reason: reason || undefined,
+        ...discardedRange,
         sort: sort ? `${sort.key}:${sort.dir}` : undefined,
         page_size: 200,
       }),
@@ -114,6 +133,36 @@ export function DiscardPoolPage() {
             </Badge>
           </button>
         ))}
+        <label className="flex items-center gap-2 text-sm">
+          加入时间
+          <Input
+            type="date"
+            value={discardedDate}
+            onChange={(e) => {
+              setDiscardedDate(e.target.value);
+              setSelected(new Set());
+            }}
+            className="w-40"
+          />
+        </label>
+        {discardedDate && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label="显示全部废弃号"
+                onClick={() => {
+                  setDiscardedDate('');
+                  setSelected(new Set());
+                }}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>显示全部废弃号</TooltipContent>
+          </Tooltip>
+        )}
         <div className="flex-1" />
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索邮箱…" className="w-56" />
       </div>

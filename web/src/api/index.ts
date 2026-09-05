@@ -84,6 +84,8 @@ export interface AccountFilter {
   reason?: string;
   uploaded?: string;
   remote_status?: string;
+  discarded_from?: string;
+  discarded_to?: string;
   page?: number;
   page_size?: number;
   sort?: string;
